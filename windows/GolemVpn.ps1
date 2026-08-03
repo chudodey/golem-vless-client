@@ -10,14 +10,21 @@ function Stop-GolemProcess {
   Start-Sleep -Seconds 2
   Get-Process sing-box -ErrorAction SilentlyContinue | Stop-Process -Force
 }
+function Start-GolemProcess {
+  if (Get-Process sing-box -ErrorAction SilentlyContinue) { return }
+  $runner = Join-Path $root 'bin\Run-GolemVless.ps1'
+  Start-Process -FilePath 'PowerShell.exe' -WindowStyle Hidden -ArgumentList @('-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File', $runner)
+  Start-Sleep -Seconds 3
+  if (-not (Get-Process sing-box -ErrorAction SilentlyContinue)) { throw 'sing-box не запустился; выполните команду logs.' }
+}
 function Get-LatestLog {
   Get-ChildItem -LiteralPath $state -Filter 'sing-box-*.err.log' -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
 }
 switch ($Command) {
-  'start'   { Enable-ScheduledTask 'GolemVLESS-Watchdog'; Start-ScheduledTask 'GolemVLESS' }
+  'start'   { Enable-ScheduledTask 'GolemVLESS-Watchdog'; Start-GolemProcess }
   'stop'    { Stop-GolemProcess }
-  'restart' { Stop-GolemProcess; Enable-ScheduledTask 'GolemVLESS-Watchdog'; Start-ScheduledTask 'GolemVLESS' }
+  'restart' { Stop-GolemProcess; Enable-ScheduledTask 'GolemVLESS-Watchdog'; Start-GolemProcess }
   'logs'    { $log = Get-LatestLog; if ($log) { Get-Content -Tail 80 $log.FullName; $out = $log.FullName -replace '\.err\.log$','.out.log'; if (Test-Path $out) { Get-Content -Tail 80 $out } } else { 'Логов пока нет.' } }
   'status'  {
     Get-ScheduledTask -TaskName 'GolemVLESS','GolemVLESS-Watchdog' | Select-Object TaskName,State

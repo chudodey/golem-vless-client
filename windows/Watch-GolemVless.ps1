@@ -7,6 +7,7 @@ if (-not $alive -or $probe -ne '204') { $failures = 1 + [int](Get-Content -Raw $
 $failures | Set-Content -NoNewline $failuresPath
 if ($failures -ge 3) {
   Stop-ScheduledTask -TaskName 'GolemVLESS'
-  Start-ScheduledTask -TaskName 'GolemVLESS'
+  Get-Process sing-box -ErrorAction SilentlyContinue | Stop-Process -Force
+  Start-Process -FilePath 'PowerShell.exe' -WindowStyle Hidden -ArgumentList @('-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File', (Join-Path $root 'bin\Run-GolemVless.ps1'))
   '0' | Set-Content -NoNewline $failuresPath
 }
