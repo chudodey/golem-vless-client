@@ -26,13 +26,14 @@ Invoke-WebRequest -UseBasicParsing "https://github.com/SagerNet/sing-box/release
 Expand-Archive -Force $archive (Join-Path $env:TEMP "sing-box-$version")
 Copy-Item -Force (Get-ChildItem (Join-Path $env:TEMP "sing-box-$version") -Recurse -Filter sing-box.exe | Select-Object -First 1).FullName "$bin\sing-box.exe"
 
-$runner = Join-Path $PSScriptRoot 'Run-GolemVless.ps1'; $watchdog = Join-Path $PSScriptRoot 'Watch-GolemVless.ps1'
-Copy-Item -Force $runner "$bin\Run-GolemVless.ps1"; Copy-Item -Force $watchdog "$bin\Watch-GolemVless.ps1"
-$runAction = New-ScheduledTaskAction -Execute 'PowerShell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$bin\Run-GolemVless.ps1`""
-$watchAction = New-ScheduledTaskAction -Execute 'PowerShell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$bin\Watch-GolemVless.ps1`""
+$runner = Join-Path $PSScriptRoot 'Run-GolemVless.ps1'; $watchdog = Join-Path $PSScriptRoot 'Watch-GolemVless.ps1'; $control = Join-Path $PSScriptRoot 'GolemVpn.ps1'
+Copy-Item -Force $runner "$bin\Run-GolemVless.ps1"; Copy-Item -Force $watchdog "$bin\Watch-GolemVless.ps1"; Copy-Item -Force $control "$bin\GolemVpn.ps1"
+$runAction = New-ScheduledTaskAction -Execute 'PowerShell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$bin\Run-GolemVless.ps1`""
+$watchAction = New-ScheduledTaskAction -Execute 'PowerShell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$bin\Watch-GolemVless.ps1`""
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Highest
 Register-ScheduledTask -Force -TaskName 'GolemVLESS' -Action $runAction -Principal $principal | Out-Null
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 365)
 Register-ScheduledTask -Force -TaskName 'GolemVLESS-Watchdog' -Action $watchAction -Trigger $trigger -Principal $principal | Out-Null
-Write-Host 'Установлено. Перед запуском закройте Durev VPN: два TUN-клиента одновременно конфликтуют.'
+Write-Host "Установлено. Управление: & '$bin\GolemVpn.ps1' status|start|stop|logs"
+Write-Host 'Перед запуском закройте Durev VPN: два TUN-клиента одновременно конфликтуют.'
 if ($Start) { Start-ScheduledTask -TaskName 'GolemVLESS' }
