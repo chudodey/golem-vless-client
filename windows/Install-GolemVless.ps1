@@ -21,10 +21,12 @@ Copy-Item -Force "$source\scripts\render_config.py" "$bin\render_config.py"
 Copy-Item -Force "$source\policy.conf" "$config\policy.conf"
 Copy-Item -Force $secret "$config\endpoints.txt"
 
-$version = '1.11.15'; $archive = Join-Path $env:TEMP "sing-box-$version-windows-amd64.zip"
-Invoke-WebRequest -UseBasicParsing "https://github.com/SagerNet/sing-box/releases/download/v$version/sing-box-$version-windows-amd64.zip" -OutFile $archive
-Expand-Archive -Force $archive (Join-Path $env:TEMP "sing-box-$version")
-Copy-Item -Force (Get-ChildItem (Join-Path $env:TEMP "sing-box-$version") -Recurse -Filter sing-box.exe | Select-Object -First 1).FullName "$bin\sing-box.exe"
+if (-not (Test-Path -LiteralPath "$bin\sing-box.exe")) {
+  $version = '1.11.15'; $archive = Join-Path $env:TEMP "sing-box-$version-windows-amd64.zip"
+  Invoke-WebRequest -UseBasicParsing "https://github.com/SagerNet/sing-box/releases/download/v$version/sing-box-$version-windows-amd64.zip" -OutFile $archive
+  Expand-Archive -Force $archive (Join-Path $env:TEMP "sing-box-$version")
+  Copy-Item -Force (Get-ChildItem (Join-Path $env:TEMP "sing-box-$version") -Recurse -Filter sing-box.exe | Select-Object -First 1).FullName "$bin\sing-box.exe"
+}
 
 $runner = Join-Path $PSScriptRoot 'Run-GolemVless.ps1'; $watchdog = Join-Path $PSScriptRoot 'Watch-GolemVless.ps1'; $control = Join-Path $PSScriptRoot 'GolemVpn.ps1'
 Copy-Item -Force $runner "$bin\Run-GolemVless.ps1"; Copy-Item -Force $watchdog "$bin\Watch-GolemVless.ps1"; Copy-Item -Force $control "$bin\GolemVpn.ps1"
