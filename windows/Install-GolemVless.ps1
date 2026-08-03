@@ -5,10 +5,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $source = Split-Path -Parent $PSScriptRoot
-$home = Join-Path $env:LOCALAPPDATA 'GolemVLESS'
-$config = Join-Path $home 'config'
-$bin = Join-Path $home 'bin'
-$state = Join-Path $home 'state'
+$clientRoot = Join-Path $env:LOCALAPPDATA 'GolemVLESS'
+$config = Join-Path $clientRoot 'config'
+$bin = Join-Path $clientRoot 'bin'
+$state = Join-Path $clientRoot 'state'
 $secret = Join-Path $source 'secrets\endpoints.txt'
 
 if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -16,7 +16,7 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
 }
 if (-not (Test-Path -LiteralPath $secret)) { throw "Не найден Dell-ключ: $secret" }
 
-New-Item -ItemType Directory -Force -Path $home,$config,$bin,$state | Out-Null
+New-Item -ItemType Directory -Force -Path $clientRoot,$config,$bin,$state | Out-Null
 Copy-Item -Force "$source\scripts\render_config.py" "$bin\render_config.py"
 Copy-Item -Force "$source\policy.conf" "$config\policy.conf"
 Copy-Item -Force $secret "$config\endpoints.txt"
