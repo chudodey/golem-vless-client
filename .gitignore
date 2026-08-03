@@ -4,3 +4,4 @@ generated/
 .ruff_cache/
 scripts/__pycache__/
 windows/local/
+windows/sandbox/results/

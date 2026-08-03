@@ -193,6 +193,30 @@ Stop-ScheduledTask GolemVLESS-Watchdog
 
 Затем включите Durev VPN как обычно.
 
+### Безопасная проверка внутри Windows Sandbox
+
+Этот режим проверяет подписку, запуск sing-box и прокси **поверх включённого
+Durev**, не создавая TUN на хосте. Это не тест маршрутизации приложений хоста,
+но позволяет отладить ноды без потери соединения. В повышенном PowerShell
+однократно включите компонент Windows Sandbox (потребуется перезагрузка):
+
+```powershell
+Enable-WindowsOptionalFeature -Online -FeatureName Containers-DisposableClientVM -All
+```
+
+После перезагрузки, с включённым Durev:
+
+```powershell
+.\windows\sandbox\Prepare-Sandbox.ps1
+Start-Process "$env:LOCALAPPDATA\GolemVLESS\sandbox\Golem-VPN-Test.wsb"
+```
+
+После автоматического теста закройте Sandbox и прочитайте результат на хосте:
+
+```powershell
+Get-Content "$env:LOCALAPPDATA\GolemVLESS\sandbox\results\report.txt"
+```
+
 Управлять сервером с ноутбука под Windows, не открывая терминал. Это
 удобство поверх основной установки, не обязательная часть — ярлыки просто
 дёргают `ssh` + `vpnctl` на сервере.

@@ -19,7 +19,7 @@ try {
   # even when redirected. These tools use stderr for harmless INFO messages,
   # so temporarily use Continue and decide by their real exit status instead.
   $ErrorActionPreference = 'Continue'
-  & python "$root\bin\render_config.py" --endpoints "$root\config\endpoints.txt" --policy "$root\config\policy.conf" --out "$root\state\config.json" --state-dir "$root\state" --fetch --tun-stack mixed --log-level warn --default-interface $uplink.Name 1>> $stdoutLog 2>> $stderrLog
+  & python "$root\bin\render_config.py" --endpoints "$root\config\endpoints.txt" --policy "$root\config\policy.conf" --out "$root\state\config.json" --state-dir "$root\state" --fetch --tun-stack mixed --mixed-port 2080 --log-level warn --default-interface $uplink.Name 1>> $stdoutLog 2>> $stderrLog
   $exitCode = $LASTEXITCODE; $ErrorActionPreference = 'Stop'
   if ($exitCode -ne 0) { throw "config render failed: $exitCode" }
   $ErrorActionPreference = 'Continue'
