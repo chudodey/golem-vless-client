@@ -7,6 +7,9 @@ $clientRoot = Join-Path $env:LOCALAPPDATA 'GolemVLESS'
 $sandboxRoot = Join-Path $clientRoot 'sandbox'
 $results = Join-Path $sandboxRoot 'results'
 $secret = Join-Path $source 'secrets\endpoints.txt'
+if (-not (Get-Command WindowsSandbox.exe -ErrorAction SilentlyContinue)) {
+  throw 'Windows Sandbox не включён. Запустите windows\sandbox\Enable-Sandbox.ps1 от администратора и перезагрузите ПК.'
+}
 if (-not (Test-Path $secret)) { throw "Не найден локальный ключ Dell: $secret" }
 if (-not (Test-Path "$clientRoot\bin\sing-box.exe")) { throw 'Сначала выполните Install-GolemVless.ps1.' }
 
