@@ -372,6 +372,16 @@ def build_config(
     direct_domains, direct_suffixes = _split_domains(policy["direct_domains"])
 
     # --- outbound(s): either one fixed node, or a latency-raced pool ---------
+    # Providers often mark tuned routes as "Gemini" or "Roblox". Put matching
+    # nodes first, so urltest includes them in its limited candidate pool but
+    # can still fail over to ordinary nodes when they are unavailable.
+    preferred = [s.strip().lower() for s in str(auto.get("preferred_tags", "")).split(",") if s.strip()]
+    if preferred:
+        nodes = sorted(
+            nodes,
+            key=lambda node: 0 if any(tag in str((node.get("meta") or {}).get("name", "")).lower() for tag in preferred) else 1,
+        )
+
     proxy_outbounds: list[dict[str, Any]] = []
     if auto_on and len(nodes) > 1:
         try:
@@ -474,8 +484,10 @@ def build_config(
     # Per-process rules come before the domain lists: "this app always goes
     # through the VPN" must win over "this domain is direct".
     # Entries containing "/" are matched as full paths, the rest by name.
-    proc_names = [p for p in policy["processes"] if "/" not in p]
-    proc_paths = [p for p in policy["processes"] if "/" in p]
+    # Windows paths use backslashes; retain the Linux behaviour while allowing
+    # the same policy file to describe exact Windows executables.
+    proc_names = [p for p in policy["processes"] if "/" not in p and "\\" not in p]
+    proc_paths = [p for p in policy["processes"] if "/" in p or "\\" in p]
     if proc_names:
         route_rules.append(route_to("proxy", process_name=proc_names))
     if proc_paths:

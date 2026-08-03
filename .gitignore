@@ -3,3 +3,4 @@ secrets/endpoints.txt
 generated/
 .ruff_cache/
 scripts/__pycache__/
+windows/local/
