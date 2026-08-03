@@ -1,0 +1,30 @@
+[Unit]
+Description=Golem VLESS split client (sing-box)
+Documentation=file:///opt/golem-vless/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStartPre=/usr/bin/python3 /opt/golem-vless/scripts/render_config.py --endpoints /etc/golem-vless/endpoints.txt --policy /etc/golem-vless/policy.conf --out /opt/golem-vless/generated/config.json --state-dir /var/lib/golem-vless --fetch
+ExecStartPre=/usr/local/bin/sing-box check -c /opt/golem-vless/generated/config.json
+ExecStart=/usr/local/bin/sing-box run -c /opt/golem-vless/generated/config.json
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=1048576
+# --fetch above only matters if endpoints.txt contains an http(s):// subscription
+# URL; it is a no-op for vless:// lines or a pasted base64 blob (see README §
+# "Если провайдер подписки блокируется по DPI" for why that fallback exists).
+# TUN needs CAP_NET_ADMIN; running as root on headless appliance for now.
+# CAP_DAC_READ_SEARCH + CAP_SYS_PTRACE нужны для правил [processes-via-vpn]:
+# sing-box определяет процесс, читая /proc чужих процессов. Без них root
+# теряет право обходить проверки доступа, процесс молча не находится, и
+# маршрутизация по программам не работает (при этом ошибок в логе нет).
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_DAC_READ_SEARCH CAP_SYS_PTRACE
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_DAC_READ_SEARCH CAP_SYS_PTRACE
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# vpnctl — единая команда управления VPN-клиентом (sing-box) на сервере.
+#
+#   vpnctl on                включить
+#   vpnctl off                выключить
+#   vpnctl restart             перезапустить (тем же конфигом)
+#   vpnctl reload              пересобрать конфиг из policy.conf и перезапустить
+#   vpnctl status               состояние + текущий сервер + проверка обоих маршрутов
+#   vpnctl nodes                список серверов с задержкой (мс), быстрейший — первым
+#   vpnctl fastest               немедленно перепроверить и переключиться на быстрейший
+#   vpnctl check <имя>            проверить, уходит ли программа <имя> через VPN
+#   vpnctl policy                открыть policy.conf в редакторе
+#   vpnctl logs [N]              последние N строк журнала (по умолчанию 50)
+#
+# Переменные окружения (переопределить, если ставили не по умолчанию):
+#   GOLEM_BASE      — корень установки          (по умолчанию /opt/golem-vless)
+#   GOLEM_ETC       — каталог конфигурации       (по умолчанию /etc/golem-vless)
+#   GOLEM_SERVICE   — имя systemd-юнита          (по умолчанию golem-vless-client)
+#   GOLEM_API       — адрес Clash API sing-box   (по умолчанию 127.0.0.1:9090)
+#
+set -uo pipefail
+
+BASE="${GOLEM_BASE:-/opt/golem-vless}"
+ETC="${GOLEM_ETC:-/etc/golem-vless}"
+SVC="${GOLEM_SERVICE:-golem-vless-client}"
+API="${GOLEM_API:-127.0.0.1:9090}"
+POLICY="$ETC/policy.conf"
+ENDPOINTS="$ETC/endpoints.txt"
+CONFIG="$BASE/generated/config.json"
+
+# urltest-группа в Clash API называется так же, как её tag в конфиге (fixed
+# by render_config.py — see build_config()).
+GROUP="proxy"
+
+c_ok=$'\033[32m'; c_err=$'\033[31m'; c_dim=$'\033[2m'; c_off=$'\033[0m'
+
+api() { curl -fsS --max-time 10 "http://${API}$1" "${@:2}"; }
+
+need_running() {
+  systemctl is-active --quiet "$SVC" && return 0
+  echo "${c_err}VPN выключен${c_off} — сначала: vpnctl on" >&2
+  return 1
+}
+
+cmd_status() {
+  if systemctl is-active --quiet "$SVC"; then
+    echo "${c_ok}● VPN включён${c_off}"
+  else
+    echo "${c_err}○ VPN выключен${c_off}"
+    return 0
+  fi
+
+  local now
+  now=$(api "/proxies/${GROUP}" 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin).get("now",""))' 2>/dev/null)
+  [ -n "$now" ] && echo "  текущий сервер: ${now}"
+
+  echo "  автозапуск при перезагрузке: $(systemctl is-enabled "$SVC" 2>/dev/null)"
+  echo
+  echo "${c_dim}проверка маршрутов:${c_off}"
+
+  local code_direct loc_vpn
+  code_direct=$(curl -fsS --max-time 12 https://ya.ru -o /dev/null -w '%{http_code}' 2>/dev/null)
+  echo "  напрямую (ya.ru):     HTTP ${code_direct:-таймаут}"
+
+  loc_vpn=$(curl -fsS --max-time 20 https://cloudflare.com/cdn-cgi/trace 2>/dev/null | sed -n 's/^loc=//p')
+  echo "  через VPN (страна):   ${loc_vpn:-недоступно}"
+}
+
+cmd_nodes() {
+  need_running || return 1
+  api "/proxies/${GROUP}" | python3 -c '
+import sys, json, urllib.request, urllib.parse
+g = json.load(sys.stdin)
+now = g.get("now")
+rows = []
+for tag in g.get("all", []):
+    try:
+        # tags contain spaces and Cyrillic — must be percent-encoded
+        url = "http://127.0.0.1:9090/proxies/" + urllib.parse.quote(tag, safe="")
+        with urllib.request.urlopen(url, timeout=5) as r:
+            hist = json.load(r).get("history", [])
+        delay = hist[-1]["delay"] if hist else 0
+    except Exception:
+        delay = 0
+    rows.append((delay if delay else 10**6, tag, delay))
+rows.sort()
+print("%-26s %10s" % ("сервер", "задержка"))
+for _, tag, delay in rows:
+    mark = " ← сейчас" if tag == now else ""
+    shown = f"{delay} мс" if delay else "нет ответа"
+    print("%-26s %10s%s" % (tag, shown, mark))
+'
+}
+
+cmd_fastest() {
+  need_running || return 1
+  echo "проверяю серверы…"
+  # /group/<name>/delay форсирует замер всей группы и переключение
+  api "/group/${GROUP}/delay?url=https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204&timeout=5000" >/dev/null 2>&1
+  sleep 2
+  local now
+  now=$(api "/proxies/${GROUP}" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("now",""))')
+  echo "${c_ok}выбран сервер: ${now}${c_off}"
+}
+
+cmd_check() {
+  # Проверяет, что программа с таким именем реально уходит в туннель.
+  # Подменяет имя процесса у curl, поэтому не требует установленной программы.
+  local name="${1:-}"
+  [ -z "$name" ] && { echo "укажите имя: vpnctl check claude" >&2; return 1; }
+  need_running || return 1
+
+  # Имя файла должно совпадать с правилом точно, поэтому кладём пробник
+  # в отдельный каталог, а не добавляем префикс к имени.
+  local dir probe
+  dir=$(mktemp -d /tmp/vpnchk.XXXXXX) || return 1
+  probe="$dir/$name"
+  cp /usr/bin/curl "$probe" 2>/dev/null || { rm -rf "$dir"; echo "не удалось создать пробник" >&2; return 1; }
+  chmod +x "$probe"
+
+  local as_app as_plain
+  as_app=$("$probe" -fsS --max-time 20 https://ifconfig.io/ip 2>/dev/null)
+  as_plain=$(curl -fsS --max-time 15 https://ifconfig.io/ip 2>/dev/null)
+  rm -rf "$dir"
+
+  echo "  как «${name}»:      ${as_app:-нет ответа}"
+  echo "  обычная программа: ${as_plain:-нет ответа}"
+  if [ -n "$as_app" ] && [ -n "$as_plain" ] && [ "$as_app" != "$as_plain" ]; then
+    echo "${c_ok}  ✓ «${name}» уходит через VPN${c_off}"
+  else
+    echo "${c_err}  ✗ «${name}» идёт напрямую — проверьте [processes-via-vpn] в policy.conf${c_off}"
+  fi
+}
+
+cmd_reload() {
+  echo "пересобираю конфиг из policy.conf…"
+  local extra=()
+  [ "${NO_TUN:-0}" = 1 ] && extra+=(--no-tun)
+  [ "${NO_RULE_SETS:-0}" = 1 ] && extra+=(--no-rule-sets)
+  # Должно совпадать с ExecStartPre systemd-юнита: иначе `vpnctl reload`
+  # удалит все ноды из URL-подписки и затем перезапустит сервис с пустым
+  # конфигом. Пасте base64 и строкам vless:// этот флаг не мешает.
+  [ "${FETCH:-1}" = 1 ] && extra+=(--fetch)
+
+  if ! python3 "$BASE/scripts/render_config.py" \
+        --endpoints "$ENDPOINTS" \
+        --policy "$POLICY" \
+        --out "$CONFIG" \
+        --state-dir "${GOLEM_STATE:-/var/lib/golem-vless}" \
+        "${extra[@]}"; then
+    echo "${c_err}ошибка рендера — конфиг НЕ заменён, VPN продолжает работать на старом${c_off}" >&2
+    return 1
+  fi
+  if command -v sing-box >/dev/null 2>&1 && ! sing-box check -c "$CONFIG"; then
+    echo "${c_err}конфиг не прошёл проверку — не применяю${c_off}" >&2
+    return 1
+  fi
+
+  if systemctl list-unit-files "${SVC}.service" >/dev/null 2>&1; then
+    systemctl restart "$SVC" && echo "${c_ok}применено${c_off}"
+  else
+    echo "Конфиг обновлён: $CONFIG (systemd-юнит $SVC не установлен)"
+  fi
+}
+
+cmd_logs() {
+  local n="${1:-50}"
+  journalctl -u "$SVC" --no-pager -n "$n"
+}
+
+case "${1:-status}" in
+  on|start)    systemctl start "$SVC"   && echo "${c_ok}VPN включён${c_off}" ;;
+  off|stop)    systemctl stop "$SVC"    && echo "VPN выключен" ;;
+  restart)     systemctl restart "$SVC" && echo "${c_ok}перезапущен${c_off}" ;;
+  reload)      cmd_reload ;;
+  status)      cmd_status ;;
+  nodes|list)  cmd_nodes ;;
+  fastest)     cmd_fastest ;;
+  check)       cmd_check "${2:-}" ;;
+  logs)        cmd_logs "${2:-}" ;;
+  policy)      "${EDITOR:-nano}" "$POLICY" ;;
+  *)
+    sed -n '2,20p' "$0" | sed 's/^# \?//'
+    ;;
+esac

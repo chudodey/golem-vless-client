@@ -1,0 +1,5 @@
+# Локальные VLESS-ключи и сгенерированные sing-box артефакты.
+secrets/endpoints.txt
+generated/
+.ruff_cache/
+scripts/__pycache__/
