@@ -34,6 +34,18 @@ $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" 
 Register-ScheduledTask -Force -TaskName 'GolemVLESS' -Action $runAction -Principal $principal | Out-Null
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 365)
 Register-ScheduledTask -Force -TaskName 'GolemVLESS-Watchdog' -Action $watchAction -Trigger $trigger -Principal $principal | Out-Null
+$desktop = [Environment]::GetFolderPath('Desktop')
+$shortcutDir = Join-Path $desktop 'Golem VPN Windows'
+New-Item -ItemType Directory -Force -Path $shortcutDir | Out-Null
+$shell = New-Object -ComObject WScript.Shell
+foreach ($command in 'status','start','stop','restart','logs') {
+  $shortcut = $shell.CreateShortcut((Join-Path $shortcutDir "VPN $command.lnk"))
+  $shortcut.TargetPath = 'PowerShell.exe'
+  $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$bin\GolemVpn.ps1`" $command"
+  $shortcut.WorkingDirectory = $bin
+  $shortcut.IconLocation = "$env:SystemRoot\System32\shell32.dll,18"
+  $shortcut.Save()
+}
 Write-Host "Установлено. Управление: & '$bin\GolemVpn.ps1' status|start|stop|logs"
 Write-Host 'Перед запуском закройте Durev VPN: два TUN-клиента одновременно конфликтуют.'
 if ($Start) { Start-ScheduledTask -TaskName 'GolemVLESS' }
