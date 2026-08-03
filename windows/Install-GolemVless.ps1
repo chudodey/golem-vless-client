@@ -38,7 +38,7 @@ $desktop = [Environment]::GetFolderPath('Desktop')
 $shortcutDir = Join-Path $desktop 'Golem VPN Windows'
 New-Item -ItemType Directory -Force -Path $shortcutDir | Out-Null
 $shell = New-Object -ComObject WScript.Shell
-foreach ($command in 'status','start','stop','restart','logs') {
+foreach ($command in 'status','start','stop','restart','logs','diagnose') {
   $shortcut = $shell.CreateShortcut((Join-Path $shortcutDir "VPN $command.lnk"))
   $shortcut.TargetPath = 'PowerShell.exe'
   $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$bin\GolemVpn.ps1`" $command"

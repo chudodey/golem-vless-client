@@ -1,18 +1,36 @@
 [CmdletBinding()]
-param([ValidateSet('status','start','stop','restart','logs')] [string]$Command = 'status')
+param([ValidateSet('status','start','stop','restart','logs','diagnose')] [string]$Command = 'status')
 
 $ErrorActionPreference = 'Stop'
 $root = Join-Path $env:LOCALAPPDATA 'GolemVLESS'
-$log = Join-Path $root 'state\sing-box.log'
+$state = Join-Path $root 'state'
+function Stop-GolemProcess {
+  Disable-ScheduledTask 'GolemVLESS-Watchdog' -ErrorAction SilentlyContinue
+  Stop-ScheduledTask 'GolemVLESS' -ErrorAction SilentlyContinue
+  Start-Sleep -Seconds 2
+  Get-Process sing-box -ErrorAction SilentlyContinue | Stop-Process -Force
+}
+function Get-LatestLog {
+  Get-ChildItem -LiteralPath $state -Filter 'sing-box-*.log' -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+}
 switch ($Command) {
   'start'   { Enable-ScheduledTask 'GolemVLESS-Watchdog'; Start-ScheduledTask 'GolemVLESS' }
-  'stop'    { Disable-ScheduledTask 'GolemVLESS-Watchdog'; Stop-ScheduledTask 'GolemVLESS' }
-  'restart' { Disable-ScheduledTask 'GolemVLESS-Watchdog'; Stop-ScheduledTask 'GolemVLESS'; Enable-ScheduledTask 'GolemVLESS-Watchdog'; Start-ScheduledTask 'GolemVLESS' }
-  'logs'    { Get-Content -Tail 80 -Wait $log }
+  'stop'    { Stop-GolemProcess }
+  'restart' { Stop-GolemProcess; Enable-ScheduledTask 'GolemVLESS-Watchdog'; Start-ScheduledTask 'GolemVLESS' }
+  'logs'    { $log = Get-LatestLog; if ($log) { Get-Content -Tail 80 $log.FullName } else { 'Логов пока нет.' } }
   'status'  {
     Get-ScheduledTask -TaskName 'GolemVLESS','GolemVLESS-Watchdog' | Select-Object TaskName,State
+    Get-ScheduledTaskInfo -TaskName 'GolemVLESS' | Select-Object LastRunTime,LastTaskResult
     Get-Process sing-box -ErrorAction SilentlyContinue | Select-Object Id,StartTime
-    $proxy = & curl.exe --proxy http://127.0.0.1:2080 --max-time 10 -fsS https://ifconfig.io/ip
+    $proxy = & curl.exe --proxy http://127.0.0.1:2080 --max-time 10 -fsS https://ifconfig.io/ip 2>$null
     "VPN IP: $proxy"
+  }
+  'diagnose' {
+    $report = Join-Path $state 'diagnostic.txt'
+    @("Golem VPN diagnostic $(Get-Date -Format o)", '--- status ---', (& $PSCommandPath status | Out-String), '--- latest log ---') | Set-Content -Encoding utf8 $report
+    $log = Get-LatestLog
+    if ($log) { Get-Content -Tail 120 $log.FullName | Add-Content -Encoding utf8 $report } else { 'Логов пока нет.' | Add-Content -Encoding utf8 $report }
+    "Отчёт сохранён: $report"
   }
 }

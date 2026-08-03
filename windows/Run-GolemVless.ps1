@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $root = Join-Path $env:LOCALAPPDATA 'GolemVLESS'
-$log = Join-Path $root 'state\sing-box.log'
+$log = Join-Path $root ("state\sing-box-{0}.log" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
 try {
   # Do not merge native stderr into PowerShell's error stream: the renderer
   # intentionally writes INFO diagnostics there, and $ErrorActionPreference
