@@ -359,6 +359,7 @@ def build_config(
     tun_stack: str = "gvisor",
     tun_name: str = DEFAULT_TUN_NAME,
     log_level: str = "info",
+    default_interface: str | None = None,
     state_dir: Path | None = None,
     policy_path: Path = POLICY_PATH,
 ) -> dict[str, Any]:
@@ -548,6 +549,8 @@ def build_config(
         "final": "direct",
         "auto_detect_interface": True,
     }
+    if default_interface:
+        route["default_interface"] = default_interface
     if rule_sets:
         route["rule_set"] = rule_sets
 
@@ -591,6 +594,7 @@ def main() -> int:
     ap.add_argument("--no-rule-sets", action="store_true", help="Skip remote geosite/geoip")
     ap.add_argument("--mixed-port", type=int, default=DEFAULT_MIXED_PORT)
     ap.add_argument("--tun-name", default=DEFAULT_TUN_NAME, help="TUN interface name")
+    ap.add_argument("--default-interface", help="Physical uplink interface name (Windows TUN loop prevention)")
     ap.add_argument(
         "--tun-stack",
         choices=["gvisor", "system", "mixed"],
@@ -636,6 +640,7 @@ def main() -> int:
         tun_stack=args.tun_stack,
         tun_name=args.tun_name,
         log_level=args.log_level,
+        default_interface=args.default_interface,
         state_dir=args.state_dir,
         policy_path=args.policy,
     )
