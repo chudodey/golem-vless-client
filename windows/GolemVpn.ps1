@@ -11,14 +11,14 @@ function Stop-GolemProcess {
   Get-Process sing-box -ErrorAction SilentlyContinue | Stop-Process -Force
 }
 function Get-LatestLog {
-  Get-ChildItem -LiteralPath $state -Filter 'sing-box-*.log' -ErrorAction SilentlyContinue |
+  Get-ChildItem -LiteralPath $state -Filter 'sing-box-*.err.log' -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
 }
 switch ($Command) {
   'start'   { Enable-ScheduledTask 'GolemVLESS-Watchdog'; Start-ScheduledTask 'GolemVLESS' }
   'stop'    { Stop-GolemProcess }
   'restart' { Stop-GolemProcess; Enable-ScheduledTask 'GolemVLESS-Watchdog'; Start-ScheduledTask 'GolemVLESS' }
-  'logs'    { $log = Get-LatestLog; if ($log) { Get-Content -Tail 80 $log.FullName } else { 'Логов пока нет.' } }
+  'logs'    { $log = Get-LatestLog; if ($log) { Get-Content -Tail 80 $log.FullName; $out = $log.FullName -replace '\.err\.log$','.out.log'; if (Test-Path $out) { Get-Content -Tail 80 $out } } else { 'Логов пока нет.' } }
   'status'  {
     Get-ScheduledTask -TaskName 'GolemVLESS','GolemVLESS-Watchdog' | Select-Object TaskName,State
     Get-ScheduledTaskInfo -TaskName 'GolemVLESS' | Select-Object LastRunTime,LastTaskResult
@@ -30,7 +30,7 @@ switch ($Command) {
     $report = Join-Path $state 'diagnostic.txt'
     @("Golem VPN diagnostic $(Get-Date -Format o)", '--- status ---', (& $PSCommandPath status | Out-String), '--- latest log ---') | Set-Content -Encoding utf8 $report
     $log = Get-LatestLog
-    if ($log) { Get-Content -Tail 120 $log.FullName | Add-Content -Encoding utf8 $report } else { 'Логов пока нет.' | Add-Content -Encoding utf8 $report }
+    if ($log) { Get-Content -Tail 120 $log.FullName | Add-Content -Encoding utf8 $report; $out = $log.FullName -replace '\.err\.log$','.out.log'; if (Test-Path $out) { Get-Content -Tail 120 $out | Add-Content -Encoding utf8 $report } } else { 'Логов пока нет.' | Add-Content -Encoding utf8 $report }
     "Отчёт сохранён: $report"
   }
 }
