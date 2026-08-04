@@ -607,10 +607,13 @@ def build_config(
     elif proxy_dns_rules:
         dns["rules"] = proxy_dns_rules
 
+    # auto_detect_interface and default_interface are mutually exclusive in
+    # sing-box. Autodetect by default; only pin a specific uplink when the
+    # caller provides an unambiguous one (see Run-GolemVless.ps1).
     route: dict[str, Any] = {
         "rules": route_rules,
         "final": "direct",
-        "auto_detect_interface": True,
+        "auto_detect_interface": default_interface is None,
     }
     if default_interface:
         route["default_interface"] = default_interface
