@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Continue'
+﻿$ErrorActionPreference = 'Continue'
 $result = 'C:\GolemResults\report.txt'
 $out = 'C:\GolemResults\sing-box.out.log'
 $err = 'C:\GolemResults\sing-box.err.log'

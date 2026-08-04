@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $root = Join-Path $env:LOCALAPPDATA 'GolemVLESS'
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $stdoutLog = Join-Path $root "state\sing-box-$stamp.out.log"
@@ -7,11 +7,23 @@ try {
   # Capture the physical default route before creating our TUN. Explicitly
   # binding outbounds to it prevents direct traffic from being routed back
   # into GolemTUN on Windows.
-  $uplink = Get-NetRoute -DestinationPrefix '0.0.0.0/0' | ForEach-Object {
+  $uplinkArgs = @()
+  # Физический адаптер с default route, переопределяется при каждом старте.
+  # Исключаем все TUN и виртуальные адаптеры, чтобы прямой трафик не замкнулся
+  # в GolemTUN. Фиксируем имя только если кандидатов ровно один (без неоднозначности
+  # WiFi+Ethernet или нескольких VPN-адаптеров); иначе полагаемся на
+  # auto_detect_interface внутри sing-box.
+  $uplinks = Get-NetRoute -DestinationPrefix '0.0.0.0/0' | ForEach-Object {
     $adapter = Get-NetAdapter -InterfaceIndex $_.InterfaceIndex -ErrorAction SilentlyContinue
-    if ($adapter -and $adapter.Name -notmatch 'Golem|Durev|sing' -and $adapter.InterfaceDescription -notmatch 'sing-tun') { [pscustomobject]@{ Name=$adapter.Name; Metric=$_.RouteMetric } }
-  } | Sort-Object Metric | Select-Object -First 1
-  if (-not $uplink) { throw 'Не найден физический сетевой адаптер с default route.' }
+    if (-not $adapter -or $adapter.Status -ne 'Up') { return }
+    if ($adapter.Name -notmatch 'golem|durev|sing' -and
+        $adapter.InterfaceDescription -notmatch 'sing-tun|hyper-v|virtual|vethernet|wsl|loopback|tap|wireguard|tunnel') {
+      [pscustomobject]@{ Name = $adapter.Name; Metric = [int]$_.RouteMetric }
+    }
+  } | Sort-Object Metric
+  if ($uplinks -and $uplinks.Count -eq 1) {
+    $uplinkArgs = @('--default-interface', $uplinks[0].Name)
+  }
   # Do not merge native stderr into PowerShell's error stream: the renderer
   # intentionally writes INFO diagnostics there, and $ErrorActionPreference
   # would otherwise turn a successful render into a terminating exception.
@@ -19,7 +31,7 @@ try {
   # even when redirected. These tools use stderr for harmless INFO messages,
   # so temporarily use Continue and decide by their real exit status instead.
   $ErrorActionPreference = 'Continue'
-  & python "$root\bin\render_config.py" --endpoints "$root\config\endpoints.txt" --policy "$root\config\policy.conf" --out "$root\state\config.json" --state-dir "$root\state" --fetch --tun-stack mixed --mixed-port 2080 --log-level warn --default-interface $uplink.Name 1>> $stdoutLog 2>> $stderrLog
+  & python "$root\bin\render_config.py" --endpoints "$root\config\endpoints.txt" --policy "$root\config\policy.conf" --out "$root\state\config.json" --state-dir "$root\state" --fetch --no-rule-sets --tun-stack mixed --mixed-port 2080 --log-level warn @uplinkArgs 1>> $stdoutLog 2>> $stderrLog
   $exitCode = $LASTEXITCODE; $ErrorActionPreference = 'Stop'
   if ($exitCode -ne 0) { throw "config render failed: $exitCode" }
   $ErrorActionPreference = 'Continue'

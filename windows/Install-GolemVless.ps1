@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
   [switch]$Start
 )
@@ -26,6 +26,9 @@ if (-not (Test-Path -LiteralPath "$bin\sing-box.exe")) {
   Invoke-WebRequest -UseBasicParsing "https://github.com/SagerNet/sing-box/releases/download/v$version/sing-box-$version-windows-amd64.zip" -OutFile $archive
   Expand-Archive -Force $archive (Join-Path $env:TEMP "sing-box-$version")
   Copy-Item -Force (Get-ChildItem (Join-Path $env:TEMP "sing-box-$version") -Recurse -Filter sing-box.exe | Select-Object -First 1).FullName "$bin\sing-box.exe"
+}
+if (Test-Path -LiteralPath "$source\windows\wintun.dll") {
+  Copy-Item -Force "$source\windows\wintun.dll" "$bin\wintun.dll"
 }
 
 $runner = Join-Path $PSScriptRoot 'Run-GolemVless.ps1'; $watchdog = Join-Path $PSScriptRoot 'Watch-GolemVless.ps1'; $control = Join-Path $PSScriptRoot 'GolemVpn.ps1'

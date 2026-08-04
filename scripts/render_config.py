@@ -127,10 +127,14 @@ def _decode_base64_blob(blob: str) -> list[str]:
     candidate = text.replace("-", "+").replace("_", "/")
     padded = candidate + ("=" * (-len(candidate) % 4))
     try:
-        decoded = base64.b64decode(padded, validate=False).decode("utf-8", errors="replace")
+        decoded = base64.b64decode(padded, validate=False).decode(
+            "utf-8", errors="replace"
+        )
     except Exception:
         return []
-    return [ln.strip() for ln in decoded.splitlines() if ln.strip().startswith("vless://")]
+    return [
+        ln.strip() for ln in decoded.splitlines() if ln.strip().startswith("vless://")
+    ]
 
 
 def _fetch_subscription(url: str, timeout: float = 30.0) -> list[str]:
@@ -145,7 +149,9 @@ def _fetch_subscription(url: str, timeout: float = 30.0) -> list[str]:
     # Common: base64 blob of newline-separated URIs
     try:
         padded = text + ("=" * (-len(text) % 4))
-        decoded = base64.b64decode(padded, validate=False).decode("utf-8", errors="replace")
+        decoded = base64.b64decode(padded, validate=False).decode(
+            "utf-8", errors="replace"
+        )
         if "://" in decoded:
             text = decoded
     except Exception:
@@ -165,7 +171,9 @@ def _qbool(params: dict[str, list[str]], key: str, default: bool = False) -> boo
     return vals[0].lower() in ("1", "true", "yes", "on")
 
 
-def _q(params: dict[str, list[str]], key: str, default: str | None = None) -> str | None:
+def _q(
+    params: dict[str, list[str]], key: str, default: str | None = None
+) -> str | None:
     vals = params.get(key)
     if not vals or vals[0] == "":
         return default
@@ -185,7 +193,9 @@ def parse_vless_uri(uri: str, provider: str | None = None) -> dict[str, Any]:
         raise ValueError("vless URI missing uuid or host")
 
     params = urllib.parse.parse_qs(parsed.query)
-    name = urllib.parse.unquote(parsed.fragment) if parsed.fragment else f"{host}:{port}"
+    name = (
+        urllib.parse.unquote(parsed.fragment) if parsed.fragment else f"{host}:{port}"
+    )
     security = (_q(params, "security") or "none").lower()
     network = (_q(params, "type") or _q(params, "network") or "tcp").lower()
     flow = _q(params, "flow") or ""
@@ -246,7 +256,9 @@ def parse_vless_uri(uri: str, provider: str | None = None) -> dict[str, Any]:
     elif network == "grpc":
         outbound["transport"] = {
             "type": "grpc",
-            "service_name": _q(params, "serviceName") or _q(params, "service_name") or "",
+            "service_name": _q(params, "serviceName")
+            or _q(params, "service_name")
+            or "",
         }
     elif network == "http":
         outbound["transport"] = {
@@ -255,7 +267,9 @@ def parse_vless_uri(uri: str, provider: str | None = None) -> dict[str, Any]:
             "host": [h for h in (_q(params, "host") or host).split(",") if h],
         }
     elif network in ("tcp", "raw"):
-        header_type = (_q(params, "headerType") or _q(params, "header_type") or "").lower()
+        header_type = (
+            _q(params, "headerType") or _q(params, "header_type") or ""
+        ).lower()
         if header_type == "http":
             outbound["transport"] = {
                 "type": "http",
@@ -317,19 +331,30 @@ def load_endpoints(path: Path, fetch_subs: bool) -> tuple[list[dict[str, Any]], 
             uris = [line]
         elif line.startswith("http://") or line.startswith("https://"):
             if not fetch_subs:
-                print(f"WARN: skip subscription (use --fetch): {line[:60]}...", file=sys.stderr)
+                print(
+                    f"WARN: skip subscription (use --fetch): {line[:60]}...",
+                    file=sys.stderr,
+                )
                 continue
             try:
                 uris = _fetch_subscription(line)
-                print(f"INFO: subscription fetched {len(uris)} vless URI(s) from {line[:60]}", file=sys.stderr)
+                print(
+                    f"INFO: subscription fetched {len(uris)} vless URI(s) from {line[:60]}",
+                    file=sys.stderr,
+                )
             except (urllib.error.URLError, TimeoutError, ValueError) as exc:
-                raise RuntimeError(f"subscription fetch failed: {line[:80]}: {exc}") from exc
+                raise RuntimeError(
+                    f"subscription fetch failed: {line[:80]}: {exc}"
+                ) from exc
         else:
             # Subscription body pasted directly (base64 blob), for when DPI
             # blocks fetching the subscription URL from this network.
             uris = _decode_base64_blob(line)
             if uris:
-                print(f"INFO: decoded {len(uris)} vless URI(s) from pasted base64", file=sys.stderr)
+                print(
+                    f"INFO: decoded {len(uris)} vless URI(s) from pasted base64",
+                    file=sys.stderr,
+                )
             else:
                 print(f"WARN: ignore line: {line[:80]}", file=sys.stderr)
                 continue
@@ -367,7 +392,12 @@ def build_config(
 
     policy = load_policy(policy_path)
     auto = policy["auto"]
-    auto_on = str(auto.get("enabled", "yes")).strip().lower() in {"yes", "true", "1", "on"}
+    auto_on = str(auto.get("enabled", "yes")).strip().lower() in {
+        "yes",
+        "true",
+        "1",
+        "on",
+    }
 
     proxy_domains, proxy_suffixes = _split_domains(policy["proxy_domains"])
     direct_domains, direct_suffixes = _split_domains(policy["direct_domains"])
@@ -376,11 +406,22 @@ def build_config(
     # Providers often mark tuned routes as "Gemini" or "Roblox". Put matching
     # nodes first, so urltest includes them in its limited candidate pool but
     # can still fail over to ordinary nodes when they are unavailable.
-    preferred = [s.strip().lower() for s in str(auto.get("preferred_tags", "")).split(",") if s.strip()]
+    preferred = [
+        s.strip().lower()
+        for s in str(auto.get("preferred_tags", "")).split(",")
+        if s.strip()
+    ]
     if preferred:
         nodes = sorted(
             nodes,
-            key=lambda node: 0 if any(tag in str((node.get("meta") or {}).get("name", "")).lower() for tag in preferred) else 1,
+            key=lambda node: (
+                0
+                if any(
+                    tag in str((node.get("meta") or {}).get("name", "")).lower()
+                    for tag in preferred
+                )
+                else 1
+            ),
         )
 
     proxy_outbounds: list[dict[str, Any]] = []
@@ -401,7 +442,9 @@ def build_config(
             # instead of an opaque index. Emoji/flags are stripped: they break
             # column alignment in the terminal.
             raw_name = str((node.get("meta") or {}).get("name") or "").strip()
-            clean = "".join(ch for ch in raw_name if ch.isalnum() or ch in " -_").strip()
+            clean = "".join(
+                ch for ch in raw_name if ch.isalnum() or ch in " -_"
+            ).strip()
             clean = " ".join(clean.split())
             # Provider labels the first node "Auto → [Оптимальная локация]";
             # keep just "Auto" so the column stays readable.
@@ -438,6 +481,18 @@ def build_config(
         "strategy": "prefer_ipv4",
         "final": "dns-direct",
     }
+
+    # Domains routed via VPN must resolve via DNS-remote (1.1.1.1 over the
+    # tunnel), otherwise RU DNS poisoning for openai.com & co. would defeat the
+    # whole split. This must apply even when rule-sets are disabled, so it is
+    # built unconditionally and only the rule_set-based DNS rules are gated.
+    proxy_dns_rules: list[dict[str, Any]] = []
+    if proxy_domains:
+        proxy_dns_rules.append({"domain": proxy_domains, "server": "dns-remote"})
+    if proxy_suffixes:
+        proxy_dns_rules.append(
+            {"domain_suffix": proxy_suffixes, "server": "dns-remote"}
+        )
 
     inbounds: list[dict[str, Any]] = [
         {
@@ -490,7 +545,15 @@ def build_config(
     proc_names = [p for p in policy["processes"] if "/" not in p and "\\" not in p]
     proc_paths = [p for p in policy["processes"] if "/" in p or "\\" in p]
     if proc_names:
-        route_rules.append(route_to("proxy", process_name=proc_names))
+        expanded_names: list[str] = []
+        for name in proc_names:
+            if name not in expanded_names:
+                expanded_names.append(name)
+            if not name.lower().endswith(".exe"):
+                exe_name = f"{name}.exe"
+                if exe_name not in expanded_names:
+                    expanded_names.append(exe_name)
+        route_rules.append(route_to("proxy", process_name=expanded_names))
     if proc_paths:
         route_rules.append(route_to("proxy", process_path=proc_paths))
 
@@ -539,10 +602,10 @@ def build_config(
         dns["rules"] = [
             {"rule_set": "geosite-category-ru", "server": "dns-direct"},
             {"rule_set": "geosite-telegram", "server": "dns-remote"},
-            {"domain": proxy_domains, "server": "dns-remote"} if proxy_domains else None,
-            {"domain_suffix": proxy_suffixes, "server": "dns-remote"} if proxy_suffixes else None,
+            *proxy_dns_rules,
         ]
-        dns["rules"] = [r for r in dns["rules"] if r]
+    elif proxy_dns_rules:
+        dns["rules"] = proxy_dns_rules
 
     route: dict[str, Any] = {
         "rules": route_rules,
@@ -579,22 +642,39 @@ def build_config(
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Render a sing-box config from endpoints.txt + policy.conf")
-    ap.add_argument("--endpoints", type=Path, default=SECRETS, help="Path to endpoints.txt")
-    ap.add_argument("--policy", type=Path, default=POLICY_PATH, help="Path to policy.conf")
-    ap.add_argument("--out", type=Path, default=OUT_CONFIG, help="Where to write config.json")
+    ap = argparse.ArgumentParser(
+        description="Render a sing-box config from endpoints.txt + policy.conf"
+    )
+    ap.add_argument(
+        "--endpoints", type=Path, default=SECRETS, help="Path to endpoints.txt"
+    )
+    ap.add_argument(
+        "--policy", type=Path, default=POLICY_PATH, help="Path to policy.conf"
+    )
+    ap.add_argument(
+        "--out", type=Path, default=OUT_CONFIG, help="Where to write config.json"
+    )
     ap.add_argument(
         "--state-dir",
         type=Path,
         default=None,
         help="Durable dir for sing-box's own cache.db (default: next to --out)",
     )
-    ap.add_argument("--fetch", action="store_true", help="Fetch https subscription URLs")
-    ap.add_argument("--no-tun", action="store_true", help="Only mixed SOCKS/HTTP on localhost")
-    ap.add_argument("--no-rule-sets", action="store_true", help="Skip remote geosite/geoip")
+    ap.add_argument(
+        "--fetch", action="store_true", help="Fetch https subscription URLs"
+    )
+    ap.add_argument(
+        "--no-tun", action="store_true", help="Only mixed SOCKS/HTTP on localhost"
+    )
+    ap.add_argument(
+        "--no-rule-sets", action="store_true", help="Skip remote geosite/geoip"
+    )
     ap.add_argument("--mixed-port", type=int, default=DEFAULT_MIXED_PORT)
     ap.add_argument("--tun-name", default=DEFAULT_TUN_NAME, help="TUN interface name")
-    ap.add_argument("--default-interface", help="Physical uplink interface name (Windows TUN loop prevention)")
+    ap.add_argument(
+        "--default-interface",
+        help="Physical uplink interface name (Windows TUN loop prevention)",
+    )
     ap.add_argument(
         "--tun-stack",
         choices=["gvisor", "system", "mixed"],
@@ -612,7 +692,11 @@ def main() -> int:
         default="info",
         help="sing-box log level ('debug' shows process-matching decisions)",
     )
-    ap.add_argument("--check-only", action="store_true", help="Parse endpoints, print index, no write")
+    ap.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Parse endpoints, print index, no write",
+    )
     args = ap.parse_args()
 
     nodes, active = load_endpoints(args.endpoints, fetch_subs=args.fetch)
@@ -646,7 +730,9 @@ def main() -> int:
     )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    args.out.write_text(
+        json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
 
     index_path = args.out.parent / "outbounds.jsonl"
     with index_path.open("w", encoding="utf-8") as fh:

@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'SilentlyContinue'
+﻿$ErrorActionPreference = 'SilentlyContinue'
 $root = Join-Path $env:LOCALAPPDATA 'GolemVLESS'
 $failuresPath = Join-Path $root 'state\watchdog-failures.txt'
 $alive = Get-Process -Name 'sing-box' -ErrorAction SilentlyContinue
