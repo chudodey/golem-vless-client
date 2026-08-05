@@ -16,10 +16,13 @@ import argparse
 import base64
 import json
 import re
+import socket
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -164,6 +167,38 @@ def _fetch_subscription(url: str, timeout: float = 30.0) -> list[str]:
     return uris
 
 
+def probe_nodes(
+    nodes: list[dict[str, Any]], timeout: float = 2.0, concurrency: int = 16
+) -> dict[int, int | None]:
+    """Parallel TCP probe of every node's server:port.
+
+    Returns {node_index: latency_ms_or_None}. A plain connect (before any
+    tunnel exists — at render time the client is still cold) is a fast, cheap
+    liveness+latency filter: it culls permanently-dead nodes and orders the
+    rest by round-trip so the urltest pool is built from live, fast ones
+    instead of blindly taking the first N of the subscription (which is why the
+    "Auto/Оптимальная локация" node that answers only after ~1.6s used to win).
+    """
+    def _probe(idx: int, node: dict[str, Any]) -> tuple[int, int | None]:
+        host = node["outbound"].get("server")
+        port = int(node["outbound"].get("server_port") or 443)
+        start = time.monotonic()
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                ms = int((time.monotonic() - start) * 1000)
+                return idx, max(1, ms)
+        except OSError:
+            return idx, None
+
+    results: dict[int, int | None] = {i: None for i in range(len(nodes))}
+    with ThreadPoolExecutor(max_workers=max(1, concurrency)) as ex:
+        futures = [ex.submit(_probe, i, n) for i, n in enumerate(nodes)]
+        for f in futures:
+            i, lat = f.result()
+            results[i] = lat
+    return results
+
+
 def _qbool(params: dict[str, list[str]], key: str, default: bool = False) -> bool:
     vals = params.get(key)
     if not vals:
@@ -283,7 +318,9 @@ def parse_vless_uri(uri: str, provider: str | None = None) -> dict[str, Any]:
             "host": _q(params, "host") or host,
         }
     elif network in ("xhttp", "splithttp"):
-        # sing-box 1.10+ may use "xhttp"; keep as tcp+tls if unsupported later
+        # sing-box implements neither "xhttp" nor "splithttp" (verified 1.13.16:
+        # "unknown transport type"). parse keeps it outbound-shaped for the
+        # xhttp-detection/filter in load_endpoints, but it will never dial.
         outbound["transport"] = {
             "type": "xhttp",
             "path": _q(params, "path") or "/",
@@ -361,9 +398,19 @@ def load_endpoints(path: Path, fetch_subs: bool) -> tuple[list[dict[str, Any]], 
 
         for uri in uris:
             try:
-                collected.append(parse_vless_uri(uri, provider=provider))
+                node = parse_vless_uri(uri, provider=provider)
             except ValueError as exc:
                 print(f"WARN: skip bad URI ({exc})", file=sys.stderr)
+                continue
+            transport = node["outbound"].get("transport", {})
+            if transport.get("type") in ("xhttp", "splithttp"):
+                print(
+                    f"WARN: skip {node['meta']['name']} — xhttp transport is "
+                    "not supported by sing-box; only ws/tcp work",
+                    file=sys.stderr,
+                )
+                continue
+            collected.append(node)
 
     if not collected:
         raise RuntimeError(
@@ -387,6 +434,7 @@ def build_config(
     default_interface: str | None = None,
     state_dir: Path | None = None,
     policy_path: Path = POLICY_PATH,
+    probe: dict[int, int | None] | None = None,
 ) -> dict[str, Any]:
     chosen = nodes[active - 1]
 
@@ -406,12 +454,15 @@ def build_config(
     # Providers often mark tuned routes as "Gemini" or "Roblox". Put matching
     # nodes first, so urltest includes them in its limited candidate pool but
     # can still fail over to ordinary nodes when they are unavailable.
+    # (Only re-sort the list when there is no probe to filter with — the probe
+    # path orders the pool by measured latency below, and re-sorting `nodes`
+    # here would desync the probe's node indices.)
     preferred = [
         s.strip().lower()
         for s in str(auto.get("preferred_tags", "")).split(",")
         if s.strip()
     ]
-    if preferred:
+    if preferred and probe is None:
         nodes = sorted(
             nodes,
             key=lambda node: (
@@ -434,7 +485,38 @@ def build_config(
             tolerance = int(str(auto.get("tolerance", "50")).strip())
         except ValueError:
             tolerance = 50
-        pool = nodes[:candidates]
+        if probe:
+            # Filter out dead nodes and order the urltest pool by measured
+            # latency, so the client always races live, fast nodes instead of
+            # blindly taking the first N of the subscription. preferred_tags
+            # get a small tolerance-sized head start so a Gemini/Roblox route
+            # still wins when it is roughly as fast as the leader.
+            effective: list[tuple[int, int, dict[str, Any]]] = []
+            for i, node in enumerate(nodes):
+                lat = probe.get(i)
+                if lat is None:
+                    nm = str((node.get("meta") or {}).get("name") or f"#{i + 1}")
+                    print(
+                        f"WARN: нода #{i + 1} ({nm}) не отвечает — исключаю из пула",
+                        file=sys.stderr,
+                    )
+                    continue
+                eff = lat
+                nm_low = str((node.get("meta") or {}).get("name") or "").lower()
+                if preferred and any(tag in nm_low for tag in preferred):
+                    eff -= tolerance
+                effective.append((eff, lat, node))
+            if len(effective) >= 2:
+                effective.sort(key=lambda t: t[0])
+                pool = [n for _, _, n in effective[:candidates]]
+            else:
+                print(
+                    "WARN: живых нод меньше двух — оставляю пул как есть",
+                    file=sys.stderr,
+                )
+                pool = nodes[:candidates]
+        else:
+            pool = nodes[:candidates]
         member_tags: list[str] = []
         for idx, node in enumerate(pool, start=1):
             ob = dict(node["outbound"])
@@ -471,10 +553,11 @@ def build_config(
 
     dns: dict[str, Any] = {
         "servers": [
-            {"tag": "dns-direct", "address": "local", "detour": "direct"},
+            {"tag": "dns-direct", "type": "local"},
             {
                 "tag": "dns-remote",
-                "address": "https://1.1.1.1/dns-query",
+                "type": "https",
+                "server": "1.1.1.1",
                 "detour": "proxy",
             },
         ],
@@ -518,7 +601,6 @@ def build_config(
                 # packets reach the TUN but connections never complete on this
                 # host, so nothing routed through the TUN works at all.
                 "stack": tun_stack,
-                "sniff": True,
             },
         )
 
@@ -613,7 +695,10 @@ def build_config(
     route: dict[str, Any] = {
         "rules": route_rules,
         "final": "direct",
-        "auto_detect_interface": default_interface is None,
+        # Direct outbound connections with a domain destination resolve the
+        # hostname via the local resolver (needed since sing-box 1.12; legacy
+        # implicit missing-resolver behaviour is removed in 1.14).
+        "default_domain_resolver": {"server": "dns-direct"},
     }
     if default_interface:
         route["default_interface"] = default_interface
@@ -700,9 +785,68 @@ def main() -> int:
         action="store_true",
         help="Parse endpoints, print index, no write",
     )
+    ap.add_argument(
+        "--no-probe",
+        action="store_true",
+        help="Skip the live TCP probe of nodes before building the config",
+    )
+    ap.add_argument(
+        "--probe-timeout",
+        type=float,
+        default=2.0,
+        help="Per-node TCP probe timeout in seconds (default: 2.0)",
+    )
+    ap.add_argument(
+        "--probe-concurrency",
+        type=int,
+        default=16,
+        help="Parallel probe threads (default: 16)",
+    )
     args = ap.parse_args()
 
     nodes, active = load_endpoints(args.endpoints, fetch_subs=args.fetch)
+
+    _pol = load_policy(args.policy)
+    _auto_on = str(_pol["auto"].get("enabled", "yes")).strip().lower() in {
+        "yes",
+        "true",
+        "1",
+        "on",
+    }
+
+    probe: dict[int, int | None] | None = None
+    if not args.check_only and not args.no_probe:
+        print("Проверяю живость нод (TCP)...", file=sys.stderr)
+        probe = probe_nodes(nodes, timeout=args.probe_timeout, concurrency=args.probe_concurrency)
+        alive = [
+            (probe[i], i + 1, n["meta"]["name"])
+            for i, n in enumerate(nodes)
+            if probe.get(i) is not None
+        ]
+        print(f"...живых {len(alive)}/{len(nodes)}", file=sys.stderr)
+        if alive:
+            alive_sorted = sorted(alive, key=lambda t: t[0])
+            best_i, best_lat, best_name = alive_sorted[0]
+            print(
+                f"...быстрейшая: #{best_i} {best_name} — {best_lat} мс",
+                file=sys.stderr,
+            )
+        # With auto-select disabled, ACTIVE is a single pinned node: if it is
+        # dead, fall back to the fastest live one instead of silently running
+        # on a node that cannot carry a byte.
+        if not _auto_on and probe.get(active - 1) is None:
+            alive_idx = [
+                (probe[i], i + 1) for i in range(len(nodes)) if probe.get(i) is not None
+            ]
+            if alive_idx:
+                alive_idx.sort(key=lambda t: t[0])
+                old, active = active, alive_idx[0][1]
+                print(
+                    f"WARN: ACTIVE #{old} не отвечает — выбираю живую ноду "
+                    f"#{active} ({alive_idx[0][0]} мс)",
+                    file=sys.stderr,
+                )
+
     meta = nodes[active - 1]["meta"]
     print(
         f"Active outbound #{active}/{len(nodes)}: "
@@ -730,6 +874,7 @@ def main() -> int:
         default_interface=args.default_interface,
         state_dir=args.state_dir,
         policy_path=args.policy,
+        probe=probe,
     )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)

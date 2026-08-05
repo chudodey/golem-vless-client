@@ -22,7 +22,7 @@ Copy-Item -Force "$source\policy.conf" "$config\policy.conf"
 Copy-Item -Force $secret "$config\endpoints.txt"
 
 if (-not (Test-Path -LiteralPath "$bin\sing-box.exe")) {
-  $version = '1.11.15'; $archive = Join-Path $env:TEMP "sing-box-$version-windows-amd64.zip"
+  $version = '1.13.16'; $archive = Join-Path $env:TEMP "sing-box-$version-windows-amd64.zip"
   Invoke-WebRequest -UseBasicParsing "https://github.com/SagerNet/sing-box/releases/download/v$version/sing-box-$version-windows-amd64.zip" -OutFile $archive
   Expand-Archive -Force $archive (Join-Path $env:TEMP "sing-box-$version")
   Copy-Item -Force (Get-ChildItem (Join-Path $env:TEMP "sing-box-$version") -Recurse -Filter sing-box.exe | Select-Object -First 1).FullName "$bin\sing-box.exe"

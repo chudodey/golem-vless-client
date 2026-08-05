@@ -1,0 +1,190 @@
+# ==============================================================================
+# Бэклог проекта golem-vless-client — машиночитаемый список идей и задач.
+#
+# Схема (YAML):
+#   version      — версия схемы файла (при ломке формата увеличивать)
+#   items        — список записей; одна запись = одна идея/задача
+#
+# Поля записи:
+#   id           — уникальный код, формат B-NNN, новый берётся = max+1
+#   title        — короткое название (до ~80 символов)
+#   status       — idea | planned | in-progress | blocked | done | wontdo
+#   priority     — low | medium | high
+#   area         — core (рендерер/общий) | linux | windows | docs | infra
+#   created      — дата создания, YYYY-MM-DD
+#   description  — что и зачем делать (свободный текст, 1-3 абзаца)
+#   acceptance   — как проверить, что готово (необязательно)
+#   notes        — уточнения, найденные факты, ссылки (необязательно)
+#
+# Как добавить запись (вручную или агенту):
+#   1) прочитать файл, взять max(id) из items и прибавить 1;
+#   2) скопировать любой существующий items-блок и заполнить поля;
+#   3) НЕ менять id у уже существующих записей (история живёт в git);
+#   4) после правки файл должен оставаться валидным YAML.
+#
+# Статус "done" не удаляется — прошлые решения остаются в бэклоге.
+# ==============================================================================
+
+version: 1
+
+items:
+  - id: B-001
+    title: Живое TCP-сканирование нод перед сборкой конфига
+    status: done
+    priority: high
+    area: core
+    created: 2026-08-05
+    description: >
+      Перед сборкой конфига клиент параллельно пингует все ноды подписки
+      (TCP до host:port), отсеивает мёртвые и упорядочивает пул urltest по
+      измеренной задержке. Медленная нода "Auto/Оптимальная локация"
+      (~1600 мс) больше не выигрывает гонку; в пул попадают только живые
+      быстрые ноды. Если авто-выбор выключен и ACTIVE-нода мертва — клиент
+      сам переключается на быстрейшую живую.
+    acceptance: >
+      render_config.py при сборке печатает "...живых N/M" и "...быстрейшая:
+      #N <имя> — X мс"; в config.json члены urltest-группы отсортированы по
+      пингу; sing-box check проходит.
+    notes: >
+      Флаги --no-probe, --probe-timeout, --probe-concurrency. --check-only
+      сканирование не запускает. Фича общая для Windows и Linux.
+
+  - id: B-002
+    title: Fallback на живую ноду при мёртвой ACTIVE
+    status: done
+    priority: medium
+    area: core
+    created: 2026-08-05
+    description: >
+      В режиме авто-выбора "no" (закреплённая ACTIVE= нода) при мёртвой
+      ноде конфиг собирался с мёртвым выходом. Теперь при провале пинга
+      ACTIVE-ноды выбирается быстрейшая живая, с предупреждением в stderr.
+    acceptance: ACTIVE=<мёртвый индекс> в автономном режиме собирает конфиг с живой нодой.
+
+  - id: B-003
+    title: Исключить ноды "Белые списки" из общего пула urltest
+    status: in-progress
+    priority: high
+    area: windows
+    created: 2026-08-05
+    description: >
+      Ноды с меткой "[Белые списки]" (Spain 2, Italy 2, cachebeam) имеют
+      низкий TCP-пинг, поэтому выигрывают urltest-гонку, но пропускают только
+      ограниченный список сайтов. Через них youtube/google не работают.
+      Нужно: либо не включать whitelist-ноды в общий пул (выделить отдельный
+      outbound/группу), либо добавлять их в пул только как fallback.
+    acceptance: >
+      После старта клиент не выбирает whitelist-ноды по умолчанию; страна
+      выхода и работоспособность google.com подтверждают выбор обычной ноды.
+    notes: Найдено в ходе теста split-маршрутизации (05.08.2026).
+
+  - id: B-004
+    title: YouTube и Anthropic блокируются на всех нодах провайдера Durev
+    status: idea
+    priority: high
+    area: provider
+    created: 2026-08-05
+    description: >
+      Все проверенные ноды подписки выходят через дата-центровые IP (OVH и
+      др.), которые YouTube блокирует по TLS/SNI (www.youtube.com по HTTPS
+      не отвечает рукопожатием, http://www.youtube.com отвечает 301), а
+      Anthropic отвечает 403 (claude.ai). Даже ноды "YT без рекламы" и
+      "Gemini/Roblox"-warp выходят не через настоящий Cloudflare WARP.
+      Результат: youtube и claude через эту подписку не работают.
+    acceptance: >
+      Найти подписку/ноды с резидентными или настоящими WARP-выходами, где
+      www.youtube.com отдаёт 200 и claude.ai не даёт 403, и включить их в
+      endpoints.txt.
+    notes: >
+      Это объясняет Forbidden для claude.ai/nemotron-3-ultra-free, с которым
+      пользователь столкнулся до диагностики. Ограничение провайдера, не
+      баг клиента.
+
+  - id: B-005
+    title: Скрипт самопроверки split-маршрутизации без TUN/админа
+    status: planned
+    priority: medium
+    area: windows
+    created: 2026-08-05
+    description: >
+      Оформить в windows/ скрипт, который поднимает sing-box в режиме
+      локального прокси (--no-tun, те же правила) и проверяет: госуслуги идут
+      напрямую (RU), youtube/прочие via-vpn идут через VPN (иностранный
+      выход), через cloudflare.com/cdn-cgi/trace. Позволяет тестировать split
+      и живость нод без прав администратора.
+    acceptance: >
+      Скрипт завершается с понятным отчётом: для каждого домена ожидаемый и
+      фактический маршрут, exit IP/страна VPN.
+    notes: Прототип проверен вручную 05.08.2026 (diag.ps1 в temp).
+
+  - id: B-006
+    title: Документировать в policy.conf ограничения провайдера Durev
+    status: idea
+    priority: low
+    area: docs
+    created: 2026-08-05
+    description: >
+      В policy.conf рядом с youtube.com добавить комментарий: через ноды
+      Durev/cloudpath youtube и claude могут не работать из-за блокировки
+      дата-центровых IP; включать в [domains-via-vpn] осознанно.
+    acceptance: Комментарий в policy.conf не противоречит реальному поведению.
+
+  - id: B-007
+    title: sing-box не поддерживает транспорт xhttp (SplithTTP) — нужен xray
+    status: done
+    priority: high
+    area: core
+    created: 2026-08-05
+    description: >
+      Основные ноды подписки Durev работают на :8443 с транспортом xhttp
+      (type=xhttp, mode=stream-one, path=/xhttp, concurrency=4,
+      security=reality). Проверено: sing-box 1.11.15 и 1.13.16 отвечают
+      "unknown transport type: xhttp" (и splithttp тоже) — этот транспорт
+      sing-box вообще не реализует (только http/ws/quic/grpc/httpupgrade).
+      Именно поэтому приложение Durev строит цепочку sing-box(tun) ->
+      socks 127.0.0.1:13001 -> xray: xray эти ноды и держит.
+    acceptance: >
+      Стэк клиента либо использует xray для xhttp-нод, либо отфильтровывает
+      их (см. B-003) и полагается на ws-ноды. sing-box сам по себе не
+      говорит с xhttp-нодами.
+    notes: Проверено на sing-box 1.13.16 (05.08.2026).
+
+  - id: B-008
+    title: Рабочие ноды — ws-ноды whitelist (cdn.assetrelay.store)
+    status: done
+    priority: high
+    area: core
+    created: 2026-08-05
+    description: >
+      Из подписки Durev (https://your-durev.com/sub/.../about/) декодирован
+      свежий список: 55 нод, почти все xhttp, но 7 ws-нод на
+      cdn.assetrelay.store:443 (type=ws, tls, path=/stream/updates/<ID>).
+      Эти ws-ноды sing-box понимает, и они открывают доступ к AI:
+      api.anthropic.com -> 401, api.openai.com -> 401, www.youtube.com -> 200.
+      Раньше допускалось, что youtube/claude не работают вовсе (B-004) —
+      на самом деле работают именно эти CDN-outlets.
+    acceptance: >-
+      endpoints.txt содержит только ws-ноды cdn.assetrelay.store; проверено
+      oодиночными запросами каждая нода даёт 401/200 (кроме заблокированных).
+    notes: Выход IP 149.33.41.113/110 (DE), 38.x (US), 147.x (FI).
+
+  - id: B-009
+    title: Разные ws-ноды дают разный доступ к AI — нужна фильтрация
+    status: in-progress
+    priority: high
+    area: core
+    created: 2026-08-05
+    description: >
+      При oодиночном тесте каждой ws-ноды выяснилось: 6/7 дают 401 на
+      api.anthropic.com, но "Russia 52" даёт 403 (заблокированный upstream),
+      а "Finland 42" не держит YouTube. В общем пуле urltest sing-box выбирает
+      ноду по задержке на каждое соединение, поэтому может уйти на
+      проблемную ноду и получить 403. Нужно: либо фильтровать пул до
+      проверенных 401-нод, либо аккуратно выбрать ACTIVE.
+    acceptance: >
+      После сборки конфига api.anthropic.com отвечает 401 (не 403),
+      www.youtube.com — 200; проверено на повторных запросах.
+    notes: >
+      Исключены Russia 52 (403), Germany 52 (нестабильна), Finland 42 (нет YT);
+      остаются Germany 82, Germany 92, USA 66, Finland 52. Требуется
+      финальный тест чистой сборки через TUN (нужны админ-права).

@@ -10,9 +10,9 @@ try {
   $uplinkArgs = @()
   # Физический адаптер с default route, переопределяется при каждом старте.
   # Исключаем все TUN и виртуальные адаптеры, чтобы прямой трафик не замкнулся
-  # в GolemTUN. Фиксируем имя только если кандидатов ровно один (без неоднозначности
-  # WiFi+Ethernet или нескольких VPN-адаптеров); иначе полагаемся на
-  # auto_detect_interface внутри sing-box.
+  # в GolemTUN. auto_detect_interface в одиночку на Windows не надёжен: без
+  # явной привязки к интерфейсу весь трафик (даже direct) зацикливается.
+  # Берём uplink с наименьшей метрикой (это основной физический адаптер).
   $uplinks = Get-NetRoute -DestinationPrefix '0.0.0.0/0' | ForEach-Object {
     $adapter = Get-NetAdapter -InterfaceIndex $_.InterfaceIndex -ErrorAction SilentlyContinue
     if (-not $adapter -or $adapter.Status -ne 'Up') { return }
@@ -21,7 +21,7 @@ try {
       [pscustomobject]@{ Name = $adapter.Name; Metric = [int]$_.RouteMetric }
     }
   } | Sort-Object Metric
-  if ($uplinks -and $uplinks.Count -eq 1) {
+  if ($uplinks) {
     $uplinkArgs = @('--default-interface', $uplinks[0].Name)
   }
   # Do not merge native stderr into PowerShell's error stream: the renderer
