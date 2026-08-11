@@ -83,14 +83,16 @@ Get-Process sing-box -ErrorAction SilentlyContinue | Stop-Process -Force
 Get-Process xray     -ErrorAction SilentlyContinue | Stop-Process -Force
 
 Start-Sleep -Seconds 3
+# Relaunch the runner fully hidden (wscript + Run-Hidden.vbs, no console window).
+$hidden = Join-Path (Split-Path $runner) 'Run-Hidden.vbs'
 if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-  Start-Process -FilePath 'PowerShell.exe' -Verb RunAs -WindowStyle Hidden `
+  Start-Process -FilePath 'wscript.exe' -Verb RunAs -WindowStyle Hidden `
     -WorkingDirectory $env:SystemRoot `
-    -ArgumentList @('-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File', $runner)
+    -ArgumentList @($hidden, $runner)
   Write-RefreshLog "клиент перезапускается (UAC)"
 } else {
-  Start-Process -FilePath 'PowerShell.exe' -WindowStyle Hidden -WorkingDirectory $env:SystemRoot `
-    -ArgumentList @('-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File', $runner)
+  Start-Process -FilePath 'wscript.exe' -WindowStyle Hidden -WorkingDirectory $env:SystemRoot `
+    -ArgumentList @($hidden, $runner)
   Write-RefreshLog "клиент перезапускается"
 }
 Enable-ScheduledTask 'GolemVLESS-Watchdog' -ErrorAction SilentlyContinue
