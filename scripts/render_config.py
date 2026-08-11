@@ -1244,6 +1244,24 @@ def build_config(
     if proxy_suffixes:
         route_rules.append(route_to("proxy", domain_suffix=proxy_suffixes))
 
+    # Telegram Desktop ignores the system proxy and dials MTProto servers by
+    # IP (149.154.x/91.108.x:443/80) straight through the TUN. With the gvisor
+    # TUN stack neither process_name nor domain sniffing matches those — only
+    # an explicit IP rule can. These blocks ship the official Telegram ranges
+    # (via telegram.org instructions); keep them in sync with the DNS-remote
+    # rule set when rule-sets are re-enabled.
+    TELEGRAM_CIDRS = [
+        "91.108.4.0/22",
+        "91.108.8.0/21",
+        "91.108.16.0/21",
+        "91.108.56.0/22",
+        "91.108.58.0/23",
+        "149.154.160.0/20",
+        "95.161.64.0/20",
+        "185.76.151.0/24",
+    ]
+    route_rules.append(route_to("proxy", ip_cidr=TELEGRAM_CIDRS))
+
     rule_sets: list[dict[str, Any]] = []
     if use_rule_sets:
         # Remote geosite sets — downloaded by sing-box on start
