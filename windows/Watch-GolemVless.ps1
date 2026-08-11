@@ -14,6 +14,10 @@ if ($failures -ge 3) {
   Stop-ScheduledTask -TaskName 'GolemVLESS'
   Get-Process sing-box -ErrorAction SilentlyContinue | Stop-Process -Force
   Get-Process xray -ErrorAction SilentlyContinue | Stop-Process -Force
-  Start-Process -FilePath 'PowerShell.exe' -WindowStyle Hidden -ArgumentList @('-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File', (Join-Path $root 'bin\Run-GolemVless.ps1'))
+  # Relaunch the runner fully hidden — a console-hosted `powershell.exe
+  # -WindowStyle Hidden` can still flash a window; wscript.exe + Run-Hidden.vbs
+  # allocates no console at all. Start-Process so the watchdog does not block
+  # waiting (Run-Hidden.vbs waits for the runner to exit).
+  Start-Process -FilePath 'wscript.exe' -WindowStyle Hidden -ArgumentList @("$root\bin\Run-Hidden.vbs", "$root\bin\Run-GolemVless.ps1")
   '0' | Set-Content -NoNewline $failuresPath
 }

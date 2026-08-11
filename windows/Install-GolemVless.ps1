@@ -53,10 +53,16 @@ if (-not (Test-Path -LiteralPath "$bin\xray.exe")) {
   }
 }
 
-$runner = Join-Path $PSScriptRoot 'Run-GolemVless.ps1'; $watchdog = Join-Path $PSScriptRoot 'Watch-GolemVless.ps1'; $control = Join-Path $PSScriptRoot 'GolemVpn.ps1'; $refresh = Join-Path $PSScriptRoot 'Refresh-Subscription.ps1'
-Copy-Item -Force $runner "$bin\Run-GolemVless.ps1"; Copy-Item -Force $watchdog "$bin\Watch-GolemVless.ps1"; Copy-Item -Force $control "$bin\GolemVpn.ps1"; Copy-Item -Force $refresh "$bin\Refresh-Subscription.ps1"
-$runAction = New-ScheduledTaskAction -Execute 'PowerShell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$bin\Run-GolemVless.ps1`""
-$watchAction = New-ScheduledTaskAction -Execute 'PowerShell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$bin\Watch-GolemVless.ps1`""
+$runner = Join-Path $PSScriptRoot 'Run-GolemVless.ps1'; $watchdog = Join-Path $PSScriptRoot 'Watch-GolemVless.ps1'; $control = Join-Path $PSScriptRoot 'GolemVpn.ps1'; $refresh = Join-Path $PSScriptRoot 'Refresh-Subscription.ps1'; $hidden = Join-Path $PSScriptRoot 'Run-Hidden.vbs'
+Copy-Item -Force $runner "$bin\Run-GolemVless.ps1"; Copy-Item -Force $watchdog "$bin\Watch-GolemVless.ps1"; Copy-Item -Force $control "$bin\GolemVpn.ps1"; Copy-Item -Force $refresh "$bin\Refresh-Subscription.ps1"; Copy-Item -Force $hidden "$bin\Run-Hidden.vbs"
+# Scheduled tasks run PowerShell through wscript.exe + Run-Hidden.vbs: a
+# console-hosted `powershell.exe -WindowStyle Hidden` still flashes a window
+# for an instant on every trigger (the watchdog runs every 5 minutes and this
+# was visible as a blue console flashing over other windows). wscript.exe is a
+# GUI host and never allocates a console, so the window never appears.
+$hiddenArg = { param($ps1) "`"$bin\Run-Hidden.vbs`" `"$bin\$ps1`"" }
+$runAction = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument (& $hiddenArg 'Run-GolemVless.ps1')
+$watchAction = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument (& $hiddenArg 'Watch-GolemVless.ps1')
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Highest
 Register-ScheduledTask -Force -TaskName 'GolemVLESS' -Action $runAction -Principal $principal | Out-Null
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 365)
@@ -65,7 +71,7 @@ Register-ScheduledTask -Force -TaskName 'GolemVLESS-Watchdog' -Action $watchActi
 # actually changed (sha256 in state\subscription.sha256). Fetches a fresh
 # subscription into state\last-subscription.txt, which render_config.py also
 # uses as its offline fallback on fetch failure.
-$refreshAction = New-ScheduledTaskAction -Execute 'PowerShell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$bin\Refresh-Subscription.ps1`""
+$refreshAction = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument (& $hiddenArg 'Refresh-Subscription.ps1')
 $refreshTrigger = New-ScheduledTaskTrigger -Daily -At 04:00
 Register-ScheduledTask -Force -TaskName 'GolemVLESS-Refresh' -Action $refreshAction -Trigger $refreshTrigger -Principal $principal | Out-Null
 $desktop = [Environment]::GetFolderPath('Desktop')
