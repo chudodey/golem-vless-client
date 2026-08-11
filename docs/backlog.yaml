@@ -377,3 +377,31 @@ items:
       sing-box 1.13.16 (1.11.15 не поднимал throwaway-конфиг, вердикты были
       None). Решение о переносимости: лёгкая TCP-проба всегда, HTTP-проба
       с кэшем; --light отключает HTTP для экономного режима.
+
+  - id: B-016
+    title: Запасной вход по паролю (консоль + SSH) на сервере Dell
+    status: done
+    priority: medium
+    area: linux
+    created: 2026-08-12
+    description: >
+      Если ноутбук/SSH-ключ недоступны, серверу нужен вход с клавиатуры и
+      монитора, а также SSH по паролю. root до этого был заблокирован
+      (passwd -S root → L), SSH — только по ключу (PasswordAuthentication no,
+      PermitRootLogin prohibit-password в 99-dell-server.conf). Реализовано
+      scripts/enable-password-login.sh: читает secrets/server-access.txt
+      (LOGIN=/PASSWORD=, файл в .gitignore), задаёт пароль root (или создаёт
+      пользователя с sudo) и дописывает в конец /etc/ssh/sshd_config блок
+      Match Address 192.168.88.0/24 (PasswordAuthentication/
+      KbdInteractiveAuthentication/PermitRootLogin yes).
+    acceptance: >
+      `sshd -T -C user=root,addr=192.168.88.5` показывает passwordauthentication
+      yes + permitrootlogin yes, а `-C ... addr=198.51.100.7` — no; `passwd -S
+      root` — P; вход с монитора под root работает; ключевой доступ не затронут.
+    notes: >
+      Парольный вход разрешён ТОЛЬКО из локальной сети (Match Address в самом
+      конце главного sshd_config): в .d-файл Match класть нельзя — .d читается
+      до хвоста sshd_config, и Match «захватил» бы идущие следом настройки
+      (UsePAM, Subsystem sftp). Консоль sshd не касается — пароль на мониторе
+      работает всегда. Сеть переопределяется GOLEM_SSH_LAN. Ключевой вход
+      сохранён — даже неудачный прогон не отрезает текущую сессию.

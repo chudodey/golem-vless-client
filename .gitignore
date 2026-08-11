@@ -2,6 +2,7 @@
 secrets/endpoints.txt
 secrets/endpoints.txt.bak
 secrets/endpoints.txt.bak2
+secrets/server-access.txt
 generated/
 .ruff_cache/
 scripts/__pycache__/

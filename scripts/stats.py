@@ -317,7 +317,6 @@ def collect(
         fetch_subs=fetch,
         sub_cache=state_dir / "last-subscription.txt",
     )
-    ts = time.time()
 
     probe = render_config.probe_nodes(nodes, timeout=2.0, concurrency=16)
     alive = sum(1 for v in probe.values() if v is not None)

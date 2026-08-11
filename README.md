@@ -401,6 +401,11 @@ sudo bash scripts/uninstall.sh --purge    # удаляет вообще всё, 
   SSH-сессией, не текущей.
 - `[domains-direct]` в `policy.conf` — держите там банки и госуслуги: трафик
   к ним через чужой сервер — лишний риск блокировки/фрода-фильтров.
+- Запасной вход по паролю (B-016): логин/пароль хранится в
+  `secrets/server-access.txt` (в `.gitignore`), применяется
+  `scripts/enable-password-login.sh`. Парольный SSH разрешён **только из
+  локальной сети** (`Match Address 192.168.88.0/24` в конце `sshd_config`);
+  извне — лишь ключевой вход. Консоль с монитора/клавиатуры доступна всегда.
 
 ## Структура проекта
 
@@ -412,13 +417,19 @@ vpn-client/
   secrets/
     endpoints.txt                 ← ваш ключ (gitignore, создаётся из example при install.sh)
     endpoints.example.txt         ← шаблон
+    server-access.txt             ← запасной логин/пароль сервера (в .gitignore, B-016)
+    server-access.txt.example     ← шаблон
   scripts/
     install.sh                    ← установка (мультидистрибутивная)
     uninstall.sh                  ← удаление
     vpnctl                        ← команда управления (ставится в /usr/local/bin)
     render_config.py              ← policy.conf + endpoints.txt → generated/config.json
+    stats.py                      ← телеметрия качества нод (B-015); автосбор каждые 30 мин
+    enable-password-login.sh      ← запасной вход по паролю: консоль + SSH только из LAN (B-016)
   systemd/
     golem-vless-client.service    ← systemd-юнит (capabilities для TUN и process-routing)
+    golem-vless-stats.timer       ← телеметрия каждые 30 минут (B-015)
+    golem-vless-stats.service     ← oneshot-сбор телеметрии
   desktop/                        ← опционально: ярлыки для Windows-ноутбука
     vpn.ps1
     install-shortcuts.ps1
