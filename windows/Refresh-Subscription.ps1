@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
   [switch]$Force
 )
@@ -11,13 +11,13 @@ $runner = Join-Path $root 'bin\Run-GolemVless.ps1'
 $lockState = Join-Path $state 'subscription.sha256'
 $logPath = Join-Path $state 'subscription-refresh.log'
 
-function Write-Log([string]$msg) {
+function Write-RefreshLog([string]$msg) {
   "$(Get-Date -Format o) $msg" | Out-File -Append -Encoding utf8 $logPath
   Write-Host "  [..] $msg"
 }
 
 if (-not (Test-Path -LiteralPath $endpoints)) {
-  Write-Log "не найден endpoints.txt: $endpoints — пропуск"
+  Write-RefreshLog "не найден endpoints.txt: $endpoints — пропуск"
   exit 1
 }
 
@@ -28,7 +28,7 @@ if (-not (Test-Path -LiteralPath $endpoints)) {
 $cache = Join-Path $state 'last-subscription.txt'
 $subUrl = Get-Content $endpoints | Where-Object { $_ -match '^https?://' } | Select-Object -First 1
 if (-not $subUrl) {
-  Write-Log "в endpoints.txt нет http(s) строки подписки — пропуск"
+  Write-RefreshLog "в endpoints.txt нет http(s) строки подписки — пропуск"
   exit 1
 }
 
@@ -50,29 +50,29 @@ try {
     if ($uris.Count -ge 5) {
       # Sort so hash is stable even when the provider shuffles the order.
       Set-Content -Encoding utf8 -Path $cache -Value (($uris | Sort-Object) -join "`n")
-      Write-Log "подписка обновлена: $($uris.Count) нод"
+      Write-RefreshLog "подписка обновлена: $($uris.Count) нод"
     } else {
-      Write-Log "в ответе подписки мало vless-строк ($($uris.Count)) — оставляю кэш"
+      Write-RefreshLog "в ответе подписки мало vless-строк ($($uris.Count)) — оставляю кэш"
     }
   }
 } catch {
-  Write-Log "не удалось обновить подписку: $($_.Exception.Message) — использую кэш"
+  Write-RefreshLog "не удалось обновить подписку: $($_.Exception.Message) — использую кэш"
 }
 
 # ── 2. Hash current state vs pool config → restart only when changed ─────────
 $now = Get-Content $cache -Raw -ErrorAction SilentlyContinue
-if (-not $now) { Write-Log "кэша подписки нет ($cache) — пропуск"; exit 1 }
+if (-not $now) { Write-RefreshLog "кэша подписки нет ($cache) — пропуск"; exit 1 }
 $hash = (Get-FileHash -InputStream ([IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes($now))) -Algorithm SHA256).Hash
 $old = Get-Content $lockState -Raw -ErrorAction SilentlyContinue
 
 if (-not $Force -and $old -eq $hash) {
-  Write-Log "подписка не изменилась (sha256 $($hash.Substring(0,12))...) — рестарт не нужен"
+  Write-RefreshLog "подписка не изменилась (sha256 $($hash.Substring(0,12))...) — рестарт не нужен"
   exit 0
 }
 
 # Changed (or -Force): restart the client so it re-renders with fresh nodes.
 $oldShort = if ($old) { $old.Substring(0, [Math]::Min(12, $old.Length)) } else { '(нет)' }
-Write-Log "подписка ИЗМЕНИЛАСЬ ($oldShort -> $($hash.Substring(0,12))..) — перезапускаю клиент"
+Write-RefreshLog "подписка ИЗМЕНИЛАСЬ ($oldShort -> $($hash.Substring(0,12))..) — перезапускаю клиент"
 Set-Content -Encoding ascii -Path $lockState -Value $hash
 
 # Same teardown as GolemVpn.ps1 stop, then relaunch the runner (needs admin).
@@ -87,11 +87,11 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
   Start-Process -FilePath 'PowerShell.exe' -Verb RunAs -WindowStyle Hidden `
     -WorkingDirectory $env:SystemRoot `
     -ArgumentList @('-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File', $runner)
-  Write-Log "клиент перезапускается (UAC)"
+  Write-RefreshLog "клиент перезапускается (UAC)"
 } else {
   Start-Process -FilePath 'PowerShell.exe' -WindowStyle Hidden -WorkingDirectory $env:SystemRoot `
     -ArgumentList @('-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File', $runner)
-  Write-Log "клиент перезапускается"
+  Write-RefreshLog "клиент перезапускается"
 }
 Enable-ScheduledTask 'GolemVLESS-Watchdog' -ErrorAction SilentlyContinue
 exit 0

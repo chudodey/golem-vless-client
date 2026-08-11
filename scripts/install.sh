@@ -12,14 +12,15 @@
 #   PREFIX            куда ставить (по умолчанию /opt/golem-vless)
 #   STATE             durable-каталог кэша sing-box (по умолчанию /var/lib/golem-vless)
 #   ETC               каталог конфигурации (по умолчанию /etc/golem-vless)
-#   SINGBOX_VERSION   версия sing-box (по умолчанию 1.11.15)
+#   SINGBOX_VERSION   версия sing-box (по умолчанию 1.13.16; 1.11/1.12 дают
+#                     "legacy DNS servers is deprecated" — см. README)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PREFIX="${PREFIX:-/opt/golem-vless}"
 STATE="${STATE:-/var/lib/golem-vless}"
 ETC="${ETC:-/etc/golem-vless}"
-SINGBOX_VERSION="${SINGBOX_VERSION:-1.11.15}"
+SINGBOX_VERSION="${SINGBOX_VERSION:-1.13.16}"
 UNIT_SRC="$ROOT/systemd/golem-vless-client.service"
 UNIT_DST="/etc/systemd/system/golem-vless-client.service"
 

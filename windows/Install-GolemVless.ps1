@@ -14,7 +14,11 @@ $secret = Join-Path $source 'secrets\endpoints.txt'
 if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
   throw 'Запустите PowerShell от имени администратора: .\windows\Install-GolemVless.ps1 -Start'
 }
-if (-not (Test-Path -LiteralPath $secret)) { throw "Не найден Dell-ключ: $secret" }
+if (-not (Test-Path -LiteralPath $secret)) {
+  Write-Warning "Не найден ключ в $secret — установлю шаблон. Вставьте ваш ключ после установки:"
+  Write-Warning "  notepad $config\endpoints.txt"
+  $secret = Join-Path $source 'secrets\endpoints.example.txt'
+}
 
 New-Item -ItemType Directory -Force -Path $clientRoot,$config,$bin,$state | Out-Null
 Copy-Item -Force "$source\scripts\render_config.py" "$bin\render_config.py"
@@ -78,4 +82,8 @@ foreach ($command in 'status','start','stop','restart','logs','diagnose','refres
 }
 Write-Host "Установлено. Управление: & '$bin\GolemVpn.ps1' status|start|stop|logs"
 Write-Host 'Перед запуском закройте Durev VPN: два TUN-клиента одновременно конфликтуют.'
+if (-not (Test-Path -LiteralPath $secret)) {
+  Write-Host "Вставьте свой ключ, если ещё не сделали: notepad $config\endpoints.txt"
+  Write-Host '  (vless://... напрямую, ссылка https:// подписки или ссылка на блок из браузера — см. пример в файле)'
+}
 if ($Start) { Start-ScheduledTask -TaskName 'GolemVLESS' }

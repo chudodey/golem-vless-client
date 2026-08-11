@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]
-param([ValidateSet('status','start','stop','restart','logs','diagnose','refresh')] [string]$Command = 'status', [switch]$Wait)
+param([ValidateSet('status','start','stop','restart','logs','diagnose','refresh','help')] [string]$Command = 'status', [switch]$Wait)
 
 $ErrorActionPreference = 'Stop'
 $root  = Join-Path $env:LOCALAPPDATA 'GolemVLESS'
@@ -46,7 +46,7 @@ function Write-Info([string]$msg) { Write-Host "       $msg"   -ForegroundColor 
 
 # ── System proxy management ──────────────────────────────────────────────────
 function Get-RealUserRegPath {
-    $loggedIn = (Get-WmiObject Win32_ComputerSystem).UserName
+    $loggedIn = (Get-CimInstance Win32_ComputerSystem).UserName
     $sid = (New-Object Security.Principal.NTAccount($loggedIn)).Translate(
                [Security.Principal.SecurityIdentifier]).Value
     if (-not (Test-Path 'HKU:')) {
@@ -63,6 +63,8 @@ function Invoke-ProxyRefresh {
 }
 
 function Set-SystemProxy {
+    [CmdletBinding(SupportsShouldProcess)]
+    param()
     try {
         $reg = Get-RealUserRegPath
         Set-ItemProperty -Path $reg -Name ProxyEnable   -Value 1
@@ -145,6 +147,8 @@ function Show-StartLog {
 
 # ── VPN process management ───────────────────────────────────────────────────
 function Stop-GolemProcess {
+    [CmdletBinding(SupportsShouldProcess)]
+    param()
     Disable-ScheduledTask 'GolemVLESS-Watchdog' -ErrorAction SilentlyContinue
     Stop-ScheduledTask    'GolemVLESS'           -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
@@ -157,6 +161,8 @@ function Stop-GolemProcess {
 }
 
 function Start-GolemProcess {
+    [CmdletBinding(SupportsShouldProcess)]
+    param()
     if (Get-Process sing-box -ErrorAction SilentlyContinue) {
         Write-Warn 'sing-box уже запущен — пропускаю старт'
         return
@@ -278,6 +284,16 @@ switch ($Command) {
         Show-ServerInfo
         Write-Host ''
 
+        # Subscription auto-refresh: next scheduled run tells the user when the
+        # node list will self-update (GolemVLESS-Refresh, daily 04:00).
+        $refreshTask = Get-ScheduledTask -TaskName 'GolemVLESS-Refresh' -ErrorAction SilentlyContinue
+        if ($refreshTask) {
+            $info = Get-ScheduledTaskInfo -TaskName 'GolemVLESS-Refresh' -ErrorAction SilentlyContinue
+            $next = if ($info -and $info.NextRunTime) { $info.NextRunTime.ToString('dd.MM HH:mm') } else { '—' }
+            Write-Info "Авто-refresh подписки: задача активна, следующий запуск $next"
+        }
+        Write-Host ''
+
         # Proxy & external IP
         $reg = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
         $proxyOn = (Get-ItemProperty $reg -ErrorAction SilentlyContinue).ProxyEnable
@@ -330,6 +346,27 @@ switch ($Command) {
         & $refreshScript -Force *>&1 | ForEach-Object { Write-Host "  $($_.ToString())" }
         Write-Host ''
         Write-Ok 'Готово. Смотрите state\subscription-refresh.log'
+    }
+
+    'help' {
+        Write-Header 'УПРАВЛЕНИЕ VPN'
+        Write-Host "  GolemVpn.ps1 <команда> [-Wait]
+"
+        foreach ($c in 'status','start','stop','restart','logs','diagnose','refresh') {
+            switch ($c) {
+                'status'   { $d = 'состояние задач, процессов, сервер, прокси, IP' }
+                'start'    { $d = 'включить VPN' }
+                'stop'     { $d = 'выключить VPN' }
+                'restart'  { $d = 'перезапустить VPN' }
+                'logs'     { $d = 'последние строки лога sing-box' }
+                'diagnose' { $d = 'отчёт state\diagnostic.txt' }
+                'refresh'  { $d = 'обновить подписку и перезапустить при изменении' }
+            }
+            Write-Host "  $c".PadRight(16) $d
+        }
+        Write-Host ''
+        Write-Info '-Wait держит окно открытым (используется ярлыками)'
+        Write-Info 'Ежедневный авто-refresh: GolemVLESS-Refresh (04:00)'
     }
 }
 

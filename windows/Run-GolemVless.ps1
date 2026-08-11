@@ -3,6 +3,18 @@ $root = Join-Path $env:LOCALAPPDATA 'GolemVLESS'
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $stdoutLog = Join-Path $root "state\sing-box-$stamp.out.log"
 $stderrLog = Join-Path $root "state\sing-box-$stamp.err.log"
+# Log rotation: every run creates sing-box-<ts>.{out,err}.log (+ xray-*.log),
+# which never get cleaned on their own — state ballooned to ~150 MB / 80 files
+# before B-014. Keep only the newest $keep files, delete the rest.
+$keep = 20
+Get-ChildItem -LiteralPath (Join-Path $root 'state') -Filter 'sing-box-*.log' -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -Skip $keep |
+    ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+Get-ChildItem -LiteralPath (Join-Path $root 'state') -Filter 'xray-*.log' -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -Skip $keep |
+    ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
 try {
   # Capture the physical default route before creating our TUN. Explicitly
   # binding outbounds to it prevents direct traffic from being routed back
