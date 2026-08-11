@@ -85,10 +85,11 @@ Get-Process xray     -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 3
 if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
   Start-Process -FilePath 'PowerShell.exe' -Verb RunAs -WindowStyle Hidden `
+    -WorkingDirectory $env:SystemRoot `
     -ArgumentList @('-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File', $runner)
   Write-Log "клиент перезапускается (UAC)"
 } else {
-  Start-Process -FilePath 'PowerShell.exe' -WindowStyle Hidden `
+  Start-Process -FilePath 'PowerShell.exe' -WindowStyle Hidden -WorkingDirectory $env:SystemRoot `
     -ArgumentList @('-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File', $runner)
   Write-Log "клиент перезапускается"
 }

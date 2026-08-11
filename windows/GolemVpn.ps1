@@ -1,21 +1,32 @@
 ﻿[CmdletBinding()]
-param([ValidateSet('status','start','stop','restart','logs','diagnose','refresh')] [string]$Command = 'status')
+param([ValidateSet('status','start','stop','restart','logs','diagnose','refresh')] [string]$Command = 'status', [switch]$Wait)
 
 $ErrorActionPreference = 'Stop'
 $root  = Join-Path $env:LOCALAPPDATA 'GolemVLESS'
 $state = Join-Path $root 'state'
+
+# ── Helper: keep the console open after a shortcut-triggered run ─────────────
+function Wait-Close {
+    if (-not $Wait) { return }
+    if ($env:GOLEM_NO_WAIT) { return }
+    Write-Host ''
+    Read-Host '   [Enter] закрыть окно'
+}
 
 # Все команды требуют прав администратора: остановка elevated sing-box,
 # Enable/Stop-ScheduledTask и запись системного прокси не работают из
 # неадминистативного окна. Само-поднимаемся, чтобы ярлыки на рабочем столе
 # работали без запуска PowerShell от имени администратора вручную.
 if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    $elevArg = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", $Command)
+    $elevArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", $Command)
+    if ($Wait) { $elevArgs += '-Wait' }
     try {
-        Start-Process -FilePath "$PSHOME\powershell.exe" -Verb RunAs -ArgumentList $elevArg | Out-Null
+        Start-Process -FilePath "$PSHOME\powershell.exe" -Verb RunAs -WindowStyle Normal `
+            -WorkingDirectory $env:SystemRoot -ArgumentList $elevArgs | Out-Null
     } catch {
         Write-Host "  [XX] Не удалось поднять права: $($_.Exception.Message)"
     }
+    Wait-Close
     exit 0
 }
 
@@ -95,6 +106,7 @@ function Show-KeyInfo {
     $lines = Get-Content $epFile
     $directVless = ($lines | Where-Object { $_ -match '^vless://' }).Count
     $b64blocks   = ($lines | Where-Object { $_ -match '^[A-Za-z0-9+/=]{100,}$' }).Count
+    $subUrl      = ($lines | Where-Object { $_ -match '^https?://' } | Select-Object -First 1)
     if ($directVless -gt 0) {
         Write-Ok  "Ключи:  $directVless vless:// строк найдено"
     } elseif ($b64blocks -gt 0) {
@@ -105,7 +117,16 @@ function Show-KeyInfo {
             $cnt = (($decoded -split "`n") | Where-Object { $_ -match '^vless://' }).Count
             Write-Ok  "Ключи:  $cnt серверов (base64-блок)"
         } catch { Write-Ok "Ключи:  base64-блок найден ($b64blocks строк)" }
-    } else { Write-Err 'Ключи: НЕ НАЙДЕНЫ — вставьте vless:// ключи в endpoints.txt' }
+    } elseif ($subUrl) {
+        $cacheFile = Join-Path $state 'last-subscription.txt'
+        $cached = (Get-Content $cacheFile -ErrorAction SilentlyContinue | Where-Object { $_ -match '^vless://' }).Count
+        if ($cached -gt 0) {
+            Write-Ok  "Ключи:  $cached серверов (подписка $($subUrl.Substring(0, [Math]::Min(40, $subUrl.Length)))...)"
+        } else {
+            Write-Ok  "Подписка: $($subUrl.Substring(0, [Math]::Min(60, $subUrl.Length)))..."
+            Write-Warn 'Кэш нод ещё пуст — клиент сам скачает ключи при первом старте (--fetch)'
+        }
+    } else { Write-Err 'Ключи: НЕ НАЙДЕНЫ — вставьте vless:// ключи или URL подписки в endpoints.txt' }
 }
 
 # ── Helper: extract start info from latest log ───────────────────────────────
@@ -143,6 +164,7 @@ function Start-GolemProcess {
     $runner = Join-Path $root 'bin\Run-GolemVless.ps1'
     Write-Info 'Запускаю sing-box (нужны права администратора)...'
     Start-Process -FilePath 'PowerShell.exe' -Verb RunAs -WindowStyle Hidden `
+        -WorkingDirectory $env:SystemRoot `
         -ArgumentList @('-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File', $runner)
     Write-Info 'Жду инициализации (5 сек)...'
     Start-Sleep -Seconds 5
@@ -268,7 +290,6 @@ switch ($Command) {
         $log = Get-LatestLog
         if ($log) {
             Write-Info "Файл: $($log.Name)  (изменён: $($log.LastWriteTime.ToString('HH:mm:ss')))"
-            Write-Host ''
             Get-Content -Tail 60 $log.FullName
             $out = $log.FullName -replace '\.err\.log$','.out.log'
             if (Test-Path $out) { Write-Host '--- stdout ---'; Get-Content -Tail 20 $out }
@@ -304,4 +325,4 @@ switch ($Command) {
     }
 }
 
-Write-Host ''
+Wait-Close

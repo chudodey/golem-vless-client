@@ -71,7 +71,7 @@ $shell = New-Object -ComObject WScript.Shell
 foreach ($command in 'status','start','stop','restart','logs','diagnose','refresh') {
   $shortcut = $shell.CreateShortcut((Join-Path $shortcutDir "VPN $command.lnk"))
   $shortcut.TargetPath = 'PowerShell.exe'
-  $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$bin\GolemVpn.ps1`" $command"
+  $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$bin\GolemVpn.ps1`" $command -Wait"
   $shortcut.WorkingDirectory = $bin
   $shortcut.IconLocation = "$env:SystemRoot\System32\shell32.dll,18"
   $shortcut.Save()
