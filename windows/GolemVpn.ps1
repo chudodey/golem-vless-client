@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]
-param([ValidateSet('status','start','stop','restart','logs','diagnose')] [string]$Command = 'status')
+param([ValidateSet('status','start','stop','restart','logs','diagnose','refresh')] [string]$Command = 'status')
 
 $ErrorActionPreference = 'Stop'
 $root  = Join-Path $env:LOCALAPPDATA 'GolemVLESS'
@@ -128,6 +128,11 @@ function Stop-GolemProcess {
     Stop-ScheduledTask    'GolemVLESS'           -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
     Get-Process sing-box -ErrorAction SilentlyContinue | Stop-Process -Force
+    # xray-core handles xhttp/splithttp nodes sing-box cannot dial (B-007);
+    # started alongside sing-box by Run-GolemVless.ps1 only when the node
+    # pool needs it, so it must be torn down here too — otherwise a stale
+    # instance keeps holding 127.0.0.1:2081 after "stop".
+    Get-Process xray -ErrorAction SilentlyContinue | Stop-Process -Force
 }
 
 function Start-GolemProcess {
@@ -146,6 +151,15 @@ function Start-GolemProcess {
     } else {
         Write-Err 'sing-box НЕ запустился — проверьте логи (VPN logs)'
         Show-StartLog
+    }
+    # xray.exe is only expected when the subscription has xhttp/splithttp
+    # nodes (B-007) — xray-config.json's presence is exactly that signal.
+    if (Test-Path -LiteralPath (Join-Path $state 'xray-config.json')) {
+        if (Get-Process xray -ErrorAction SilentlyContinue) {
+            Write-Ok 'xray-core запущен (обслуживает xhttp-ноды)'
+        } else {
+            Write-Warn 'xray-core НЕ запустился — xhttp-ноды подписки недоступны, работают только ws/tcp'
+        }
     }
 }
 
@@ -215,6 +229,17 @@ switch ($Command) {
         } else {
             Write-Err 'sing-box: НЕ ЗАПУЩЕН'
         }
+        # xray.exe (xhttp-ноды, B-007) экспектится только когда рендер решил,
+        # что он нужен — иначе состояние "не запущен" не является проблемой.
+        $xrayExpected = Test-Path -LiteralPath (Join-Path $state 'xray-config.json')
+        $xrayProc = Get-Process xray -ErrorAction SilentlyContinue
+        if ($xrayProc) {
+            Write-Ok  "xray-core PID $($xrayProc.Id), запущен с $($xrayProc.StartTime.ToString('HH:mm:ss'))  (xhttp-ноды)"
+        } elseif ($xrayExpected) {
+            Write-Err 'xray-core: НЕ ЗАПУЩЕН, а нужен (xhttp-ноды в подписке недоступны)'
+        } else {
+            Write-Info 'xray-core: не требуется (в подписке нет xhttp-нод)'
+        }
         Write-Host ''
 
         # Keys & server
@@ -263,6 +288,19 @@ switch ($Command) {
             if (Test-Path $out) { Get-Content -Tail 120 $out | Add-Content -Encoding utf8 $report }
         } else { 'No logs yet.' | Add-Content -Encoding utf8 $report }
         Write-Ok "Отчёт сохранён: $report"
+    }
+
+    'refresh' {
+        Write-Header 'ОБНОВЛЕНИЕ НОД (ПОДПИСКА)'
+        $refreshScript = Join-Path $root 'bin\Refresh-Subscription.ps1'
+        if (-not (Test-Path -LiteralPath $refreshScript)) {
+            Write-Err "Не найден Refresh-Subscription.ps1: $refreshScript — перезапустите Install-GolemVless.ps1"
+            break
+        }
+        Write-Info 'Проверяю подписку и (при изменении) перезапускаю клиент...'
+        & $refreshScript -Force *>&1 | ForEach-Object { Write-Host "  $($_.ToString())" }
+        Write-Host ''
+        Write-Ok 'Готово. Смотрите state\subscription-refresh.log'
     }
 }
 

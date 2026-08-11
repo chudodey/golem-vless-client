@@ -147,7 +147,10 @@ items:
       Стэк клиента либо использует xray для xhttp-нод, либо отфильтровывает
       их (см. B-003) и полагается на ws-ноды. sing-box сам по себе не
       говорит с xhttp-нодами.
-    notes: Проверено на sing-box 1.13.16 (05.08.2026).
+    notes: >
+      Проверено на sing-box 1.13.16 (05.08.2026). Реальный фикс (не
+      фильтрация, а поддержка xhttp через xray-core) сделан в B-011
+      (09.08.2026) — та же цепочка, что и у самого Durev.
 
   - id: B-008
     title: Рабочие ноды — ws-ноды whitelist (cdn.assetrelay.store)
@@ -216,3 +219,58 @@ items:
       Решает и B-003 (whitelist-ноды с низким пингом), и B-009. Переоценка
       каждые N часов, либо на каждый рестарт. Проверка ноды = 1 HTTP-запрос
       к api.anthropic.com + 1 к www.youtube.com через временный outbound.
+
+  - id: B-011
+    title: Xray-core как второй движок — реальная поддержка xhttp/splithttp (не фильтр)
+    status: done
+    priority: high
+    area: core
+    created: 2026-08-09
+    description: >
+      Вместо того чтобы отбрасывать xhttp/splithttp-ноды (B-007/B-008,
+      оставлявшие живыми только 4-7 ws-нод из 55 — отсюда и хроническая
+      нестабильность, которую приходилось чинить руками), клиент теперь
+      держит их через Xray-core — ту же цепочку sing-box(TUN)->xray, что
+      использует официальное приложение Durev (подтверждено разбором его
+      процессов 09.08.2026: sing-box и xray оба дочерние для "Durev VPN").
+      render_config.py: узлы получают meta.engine = "xray"|"sing-box" при
+      парсинге (не отбрасываются); xhttp/splithttp-узлы больше не пытаются
+      стать sing-box outbound. Новые функции: vless_uri_to_xray_outbound()
+      (VLESS URI -> схема Xray, независимо от sing-box-парсера),
+      build_xray_config() (N нод -> один локальный SOCKS через
+      routing.balancers + observatory/leastPing — встроенный аналог
+      urltest, но внутри Xray), find_xray(). sing-box получает единственный
+      дополнительный outbound "xray-pool" (socks на 127.0.0.1:2081) как ещё
+      одного участника гонки urltest — гонка идёт "лучшая нативная нода"
+      против "лучшая xray-управляемая нода", а не против 40+ нод, которые
+      sing-box всё равно не смог бы набрать. B-010 (HTTP-проверка
+      Anthropic/YouTube) расширена: xhttp-ноды проверяются через
+      одноразовый xray вместо sing-box (_probe_single_node диспетчеризует
+      по engine). Новые флаги: --xray-port (по умолчанию 2081), --no-xray
+      (вернуться к старому поведению — отбрасывать xhttp).
+      Windows: Run-GolemVless.ps1 стартует xray.exe перед sing-box.exe,
+      только если рендер написал state\xray-config.json; GolemVpn.ps1 и
+      Watch-GolemVless.ps1 знают про xray.exe (статус/остановка/watchdog),
+      но не считают его отсутствие ошибкой, если xhttp-нод в подписке нет.
+      Install-GolemVless.ps1 копирует windows\bin\xray.exe (в репозитории,
+      скачан и проверен по SHA-256 с официального
+      github.com/XTLS/Xray-core, v26.3.27) либо скачивает сам при первой
+      установке.
+    acceptance: >
+      xray.exe run -test -config <сгенерированный xray-config.json> ->
+      "Configuration OK"; sing-box.exe check -c <config.json> с
+      "xray-pool"-outbound проходит без ошибок. Проверено на трёх
+      синтетических случаях: только xray-ноды (одна закреплена, ACTIVE=N),
+      только xray-ноды (autoselect, вырождается в единственный socks-outbound
+      без urltest-обёртки), смешанный пул (4 нативные ws-ноды + 1
+      xray-нода, urltest с 5 участниками включая "xray-pool"). Реальная
+      подписка Durev (55 нод, xhttp) для интеграционного теста не
+      использовалась — секрет не публикуется, тест собран на фиктивных
+      vless://... URI.
+    notes: >
+      Не тестировалось живьём через реальный TUN (Durev занимал TUN на
+      момент разработки, плюс сам упал во время сессии — см. чат
+      09.08.2026 "это не ты ли уронил VPN"). Следующий шаг: живой прогон с
+      реальной подпиской Durev (55 нод) при выключенном Durev, подтвердить,
+      что пул из xhttp-нод даёт устойчивый доступ к Anthropic/YouTube и
+      urltest реально переключается между "лучшая нативная" и "xray-pool".

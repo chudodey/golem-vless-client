@@ -1,7 +1,13 @@
 # Локальные VLESS-ключи и сгенерированные sing-box артефакты.
 secrets/endpoints.txt
+secrets/endpoints.txt.bak
+secrets/endpoints.txt.bak2
 generated/
 .ruff_cache/
 scripts/__pycache__/
 windows/local/
 windows/sandbox/results/
+
+# Downloaded binaries (sing-box.exe, xray.exe): fetched fresh by
+# Install-GolemVless.ps1, never committed — see B-011.
+windows/bin/

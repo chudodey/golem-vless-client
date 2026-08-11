@@ -31,9 +31,40 @@ try {
   # even when redirected. These tools use stderr for harmless INFO messages,
   # so temporarily use Continue and decide by their real exit status instead.
   $ErrorActionPreference = 'Continue'
-  & python "$root\bin\render_config.py" --endpoints "$root\config\endpoints.txt" --policy "$root\config\policy.conf" --out "$root\state\config.json" --state-dir "$root\state" --fetch --no-rule-sets --tun-stack mixed --mixed-port 2080 --log-level warn @uplinkArgs 1>> $stdoutLog 2>> $stderrLog
+  & python "$root\bin\render_config.py" --endpoints "$root\config\endpoints.txt" --policy "$root\config\policy.conf" --out "$root\state\config.json" --state-dir "$root\state" --fetch --no-rule-sets --tun-stack mixed --mixed-port 2080 --xray-port 2081 --log-level warn @uplinkArgs 1>> $stdoutLog 2>> $stderrLog
   $exitCode = $LASTEXITCODE; $ErrorActionPreference = 'Stop'
   if ($exitCode -ne 0) { throw "config render failed: $exitCode" }
+
+  # Xray-core handles xhttp/splithttp nodes sing-box cannot dial at all (see
+  # docs/backlog.yaml B-007). render_config.py writes state\xray-config.json
+  # only when the surviving node pool actually needs it — its presence is
+  # the sole signal for whether to start xray.exe here. sing-box's
+  # "xray-pool" socks outbound (127.0.0.1:2081) depends on this being up
+  # first: start it, wait for the port, then hand off to sing-box.
+  $xrayConfig = "$root\state\xray-config.json"
+  Get-Process xray -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+  if (Test-Path -LiteralPath $xrayConfig) {
+    $xrayOutLog = Join-Path $root "state\xray-$stamp.out.log"
+    $xrayErrLog = Join-Path $root "state\xray-$stamp.err.log"
+    $ErrorActionPreference = 'Continue'
+    & "$root\bin\xray.exe" run -test -config $xrayConfig 1>> $xrayOutLog 2>> $xrayErrLog
+    $exitCode = $LASTEXITCODE; $ErrorActionPreference = 'Stop'
+    if ($exitCode -ne 0) { throw "xray config check failed: $exitCode" }
+
+    Start-Process -FilePath "$root\bin\xray.exe" -ArgumentList @('run', '-config', $xrayConfig) `
+      -WindowStyle Hidden -RedirectStandardOutput $xrayOutLog -RedirectStandardError $xrayErrLog
+    $deadline = (Get-Date).AddSeconds(10)
+    $up = $false
+    while ((Get-Date) -lt $deadline) {
+      if (Test-NetConnection -ComputerName 127.0.0.1 -Port 2081 -InformationLevel Quiet -WarningAction SilentlyContinue) { $up = $true; break }
+      Start-Sleep -Milliseconds 300
+    }
+    if (-not $up) {
+      "$(Get-Date -Format o) WARN: xray did not open :2081 within 10s — sing-box will still start, xray-pool nodes just lose the first urltest race" |
+        Out-File -Append -Encoding utf8 $stderrLog
+    }
+  }
+
   $ErrorActionPreference = 'Continue'
   & "$root\bin\sing-box.exe" check -c "$root\state\config.json" 1>> $stdoutLog 2>> $stderrLog
   $exitCode = $LASTEXITCODE; $ErrorActionPreference = 'Stop'

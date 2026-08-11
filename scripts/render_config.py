@@ -14,10 +14,15 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
+import os
 import re
+import shutil
 import socket
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -102,19 +107,22 @@ def load_policy(path: Path) -> dict[str, Any]:
     return out
 
 
-def _split_domains(entries: list[str]) -> tuple[list[str], list[str]]:
-    """Split entries into exact domains and suffix matches ('.example.com')."""
-    domains: list[str] = []
+def _split_domains(entries: list[str]) -> list[str]:
+    """Normalize policy domain entries into sing-box `domain_suffix` values.
+
+    policy.conf semantics: a bare "example.com" means the domain AND all its
+    subdomains (api.example.com, ...); a leading-dot ".example.com" means
+    subdomains only. sing-box's `domain` rule matches only the exact
+    hostname, while `domain_suffix` matches the root plus subdomains, so
+    both forms collapse to a single suffix list here.
+    """
     suffixes: list[str] = []
     for raw in entries:
         entry = raw.strip().lower()
         if not entry:
             continue
-        if entry.startswith("."):
-            suffixes.append(entry.lstrip("."))
-        else:
-            domains.append(entry)
-    return domains, suffixes
+        suffixes.append(entry.lstrip("."))
+    return suffixes
 
 
 def _decode_base64_blob(blob: str) -> list[str]:
@@ -197,6 +205,344 @@ def probe_nodes(
             i, lat = f.result()
             results[i] = lat
     return results
+
+
+PROBE_ANTHROPIC_URL = "https://api.anthropic.com/v1/models"
+PROBE_YOUTUBE_URL = "https://www.youtube.com/"
+# Reaching Anthropic's API unauthenticated answers 401 (missing key). Some
+# endpoints now 404 on a bare GET; either means the exit is NOT blocked
+# upstream (a blocked datacenter exit answers 403 and must be filtered out).
+PROBE_DEFAULT_ANTHROPIC_OK = "401 404"
+PROBE_DEFAULT_YOUTUBE_OK = "200"
+PROBE_CACHE_TTL_HOURS = 6.0
+PROBE_TIMEOUT = 5.0
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse 3xx redirects so a proxied probe reports the raw status code.
+
+    A node that answers a probe URL with 301/302 instead of the expected
+    200/401 is degraded (e.g. YouTube would serve a redirect to a consent or
+    block page) — without this handler urllib would silently follow the
+    redirect and report the final 200, masking the problem.
+    """
+
+    def redirect_request(
+        self, req, fp, code, msg, headers, newurl
+    ):  # noqa: ANN001
+        return None
+
+
+def _http_status_via_proxy(port: int, url: str, timeout: float) -> int | None:
+    """GET `url` through a local mixed proxy; return the HTTP status code.
+
+    Returns None when the request could not be completed at all (TCP refused,
+    TLS handshake timeout, proxy dead). HTTPError carries the interesting
+    statuses here — 401 (Anthropic needs an API key) and 403 (blocked exit)
+    are *expected* outcomes, not transport failures.
+    """
+    proxy = f"http://127.0.0.1:{port}"
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": proxy, "https": proxy}),
+        _NoRedirect(),
+    )
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "golem-vless-client/node-probe"}
+    )
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            return resp.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+    except (urllib.error.URLError, OSError, TimeoutError):
+        return None
+
+
+def _probe_config(node: dict[str, Any], listen_port: int) -> dict[str, Any]:
+    """Minimal sing-box config that dials HTTP only through `node`.
+
+    One mixed inbound on an ephemeral localhost port, the node as the only
+    usable outbound, direct/block as inert exits. DNS stays local — we want to
+    prove the *exit* IP of the tunnel is allowed, not exercise DNS routing.
+    Route final is the node: any CONNECT (api.anthropic.com:443) goes through
+    the tunnel, exactly like a real proxied request.
+    """
+    outbound = dict(node["outbound"])
+    outbound["tag"] = "proxy"
+    return {
+        "log": {"level": "error"},
+        "inbounds": [
+            {
+                "type": "mixed",
+                "tag": "probe-in",
+                "listen": "127.0.0.1",
+                "listen_port": listen_port,
+                "set_system_proxy": False,
+            }
+        ],
+        "outbounds": [
+            outbound,
+            {"type": "direct", "tag": "direct"},
+            {"type": "block", "tag": "block"},
+        ],
+        "dns": {
+            "servers": [
+                {"tag": "dns-local", "type": "local"},
+                {
+                    "tag": "dns-remote",
+                    "type": "https",
+                    "server": "1.1.1.1",
+                    "detour": "proxy",
+                },
+            ],
+            "strategy": "prefer_ipv4",
+            "final": "dns-local",
+            # Resolve the probe targets the same way production does (over the
+            # tunnel) so the check reflects real routed traffic, not the local
+            # RU resolver — otherwise a poisoned local answer can mask a node
+            # that actually works (or vice versa).
+            "rules": [
+                {
+                    "domain": ["api.anthropic.com", "www.youtube.com"],
+                    "server": "dns-remote",
+                }
+            ],
+        },
+        "route": {
+            "rules": [
+                {"action": "sniff"},
+                {"protocol": "dns", "action": "hijack-dns"},
+            ],
+            "final": "proxy",
+            "default_domain_resolver": {"server": "dns-local"},
+        },
+    }
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _run_throwaway_probe(
+    binary: str, run_args: list[str], cfg: dict[str, Any], port: int, timeout: float
+) -> tuple[int | None, int | None]:
+    """Write `cfg` to a temp file, run `binary run_args... -c cfg`, probe
+    Anthropic + YouTube through the port it opens, then tear it down.
+
+    Engine-agnostic: sing-box and xray-core both take "run -c <file>" and
+    both open their inbound almost immediately, so the same wait/probe/kill
+    sequence works for either.
+    """
+    cfg_path = None
+    proc = None
+    try:
+        fd, cfg_path = tempfile.mkstemp(
+            prefix="golem-probe-", suffix=".json", dir=tempfile.gettempdir()
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(cfg, fh)
+        creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        proc = subprocess.Popen(
+            [binary, *run_args, "-c", cfg_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
+        # wait for the inbound to accept connections
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                return None, None  # process exited: bad node/config
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+                    break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            return None, None
+        anth = _http_status_via_proxy(port, PROBE_ANTHROPIC_URL, timeout)
+        yt = _http_status_via_proxy(port, PROBE_YOUTUBE_URL, timeout)
+        return anth, yt
+    finally:
+        if proc is not None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        if cfg_path is not None:
+            try:
+                os.unlink(cfg_path)
+            except OSError:
+                pass
+
+
+def _probe_single_node(
+    node: dict[str, Any],
+    sing_box: str,
+    timeout: float,
+    xray: str | None = None,
+) -> tuple[int | None, int | None]:
+    """Probe one node's actual reachability (Anthropic + YouTube).
+
+    Dispatches by node["meta"]["engine"]: sing-box-native nodes get a
+    throwaway sing-box instance; xhttp/splithttp nodes (engine="xray") need
+    a throwaway Xray-core instance instead, since sing-box cannot dial them
+    at all (see B-007). Returns (None, None) for an xray node when no xray
+    binary is available — it is skipped, not falsely marked reachable.
+    """
+    engine = node["meta"].get("engine", "sing-box")
+    port = _free_port()
+    if engine == "xray":
+        if xray is None:
+            return None, None
+        return _run_throwaway_probe(xray, ["run"], build_xray_config([node], port), port, timeout)
+    return _run_throwaway_probe(sing_box, ["run"], _probe_config(node, port), port, timeout)
+
+
+def _node_fingerprint(node: dict[str, Any]) -> str:
+    """Stable identity of a node for the probe cache.
+
+    Server + port + transport are what actually matter for reachability; the
+    uuid/account is shared across the Durev pool. Using only the dialable bits
+    keeps cache hits high across subscription refreshes.
+    """
+    ob = node["outbound"]
+    core = {
+        "server": ob.get("server"),
+        "server_port": ob.get("server_port"),
+        "transport": ob.get("transport"),
+    }
+    return hashlib.sha256(
+        json.dumps(core, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:20]
+
+
+def probe_nodes_http(
+    nodes: list[dict[str, Any]],
+    sing_box: str,
+    *,
+    xray: str | None = None,
+    timeout: float = PROBE_TIMEOUT,
+    anthropic_ok: str = PROBE_DEFAULT_ANTHROPIC_OK,
+    youtube_ok: str = PROBE_DEFAULT_YOUTUBE_OK,
+    cache_path: Path | None = None,
+    cache_ttl_hours: float = PROBE_CACHE_TTL_HOURS,
+) -> tuple[set[int], dict[int, tuple[int | None, int | None]]]:
+    """HTTP-probe every node through a throwaway sing-box/xray instance.
+
+    Expected outcomes (see B-008/B-010): api.anthropic.com must answer
+    401 (no API key sent; 403 = blocked upstream exit) and www.youtube.com
+    must answer 200. Returns (passing_indices, per_index (anthropic, youtube)).
+
+    Each node is probed through whichever engine can actually dial it
+    (node["meta"]["engine"] — sing-box for native transports, xray-core for
+    xhttp/splithttp, see B-007). Passing `xray=None` when no Xray binary is
+    installed simply means xhttp nodes are skipped (probed as unreachable)
+    rather than crashing the whole render.
+
+    Results are cached in `cache_path` (JSON keyed by node fingerprint) so a
+    stable pool is not re-dialed on every render. Passed nodes are reused for
+    `cache_ttl_hours`; failed nodes are always re-probed (they may have
+    recovered, and the whole point of B-010 is that the pool must be current).
+    """
+    accepted_anth = {
+        int(c) for c in anthropic_ok.replace(",", " ").split() if c.strip().isdigit()
+    }
+    accepted_yt = {
+        int(c) for c in youtube_ok.replace(",", " ").split() if c.strip().isdigit()
+    }
+
+    cache: dict[str, dict[str, Any]] = {}
+    if cache_path is not None and cache_path.is_file():
+        try:
+            cache = json.loads(cache_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            cache = {}
+
+    results: dict[int, tuple[int | None, int | None]] = {}
+    passing: set[int] = set()
+    to_probe: list[tuple[int, dict[str, Any], str]] = []
+
+    now = time.time()
+    for i, node in enumerate(nodes):
+        fp = _node_fingerprint(node)
+        hit = cache.get(fp)
+        if hit and hit.get("passed") and now - hit.get("at", 0) < cache_ttl_hours * 3600:
+            passing.add(i)
+            results[i] = (hit.get("anthropic"), hit.get("youtube"))
+        else:
+            to_probe.append((i, node, fp))
+
+    if to_probe:
+        print(
+            f"Проверяю ноды по HTTP (api.anthropic.com → 401, "
+            f"www.youtube.com → 200)... {len(to_probe)} к проверке",
+            file=sys.stderr,
+        )
+        with ThreadPoolExecutor(max_workers=min(8, len(to_probe))) as ex:
+
+            def _worker(
+                i: int, node: dict[str, Any]
+            ) -> tuple[int, int | None, int | None]:
+                return (i, *_probe_single_node(node, sing_box, timeout, xray=xray))
+
+            futures = [
+                ex.submit(_worker, i, node) for i, node, _fp in to_probe
+            ]
+            fp_by_index = {i: fp for i, _node, fp in to_probe}
+            for f in futures:
+                i, anth, yt = f.result()
+                results[i] = (anth, yt)
+                fp = fp_by_index[i]
+                ok = anth in accepted_anth and yt in accepted_yt
+                cache[fp] = {
+                    "passed": bool(ok),
+                    "anthropic": anth,
+                    "youtube": yt,
+                    "at": time.time(),
+                }
+                name = nodes[i]["meta"]["name"]
+                print(
+                    f"  #{i + 1} {name}: anthropic={anth} "
+                    f"youtube={yt} → {'OK' if ok else 'FAIL'}",
+                    file=sys.stderr,
+                )
+                if ok:
+                    passing.add(i)
+
+        if cache_path is not None:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(
+                json.dumps(cache, ensure_ascii=False, indent=1),
+                encoding="utf-8",
+            )
+
+    return passing, results
+
+
+def find_sing_box() -> str | None:
+    """Locate the sing-box binary used for HTTP probing.
+
+    The renderer itself never needs sing-box, but B-010's per-node HTTP probe
+    dials the tunnel through a throwaway sing-box instance. Resolution order:
+    env SING_BOX, PATH, then the Windows install dir next to this script's
+    sync copy (%LOCALAPPDATA%\\GolemVLESS\\bin).
+    """
+    env = os.environ.get("SING_BOX")
+    if env and Path(env).is_file():
+        return env
+    on_path = shutil.which("sing-box")
+    if on_path:
+        return on_path
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        cand = Path(local) / "GolemVLESS" / "bin" / "sing-box.exe"
+        if cand.is_file():
+            return str(cand)
+    return None
 
 
 def _qbool(params: dict[str, list[str]], key: str, default: bool = False) -> bool:
@@ -336,12 +682,211 @@ def parse_vless_uri(uri: str, provider: str | None = None) -> dict[str, Any]:
         "security": security,
         "network": network,
         "encryption": encryption,
+        # xhttp/splithttp nodes are dialed through Xray instead of sing-box
+        # (see B-007); build_xray_config() re-parses this into Xray's own
+        # outbound schema rather than reusing the sing-box-shaped one below.
+        "engine": "xray" if network in ("xhttp", "splithttp") else "sing-box",
+        "raw_uri": uri,
         "uri_preview": re.sub(r"vless://[^@]+@", "vless://***@", uri)[:120],
     }
     return {"outbound": outbound, "meta": meta}
 
 
-def load_endpoints(path: Path, fetch_subs: bool) -> tuple[list[dict[str, Any]], int]:
+DEFAULT_XRAY_PORT = 2081
+
+
+def find_xray() -> str | None:
+    """Locate the Xray-core binary.
+
+    sing-box implements neither "xhttp" nor "splithttp" transport (verified
+    1.11.15 and 1.13.16: "unknown transport type"). Xray-core does — this is
+    exactly the chain Durev's own official app uses internally (sing-box for
+    TUN, xray-core as a child process for xhttp), confirmed by inspecting its
+    running processes (2026-08-09: PIDs for "sing-box" and "xray" both owned
+    by "Durev VPN", the xray child listening on 127.0.0.1:13001). Resolution
+    order mirrors find_sing_box().
+    """
+    env = os.environ.get("XRAY")
+    if env and Path(env).is_file():
+        return env
+    on_path = shutil.which("xray")
+    if on_path:
+        return on_path
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        cand = Path(local) / "GolemVLESS" / "bin" / "xray.exe"
+        if cand.is_file():
+            return str(cand)
+    return None
+
+
+def vless_uri_to_xray_outbound(uri: str, tag: str) -> dict[str, Any]:
+    """Parse vless://... into an Xray-core outbound fragment.
+
+    Deliberately independent of parse_vless_uri()'s sing-box-shaped output:
+    Xray's VLESS outbound schema (vnext/streamSettings) is structurally
+    different, and Xray is the only engine here that understands
+    xhttp/splithttp — the entire reason this function exists (see B-007).
+    """
+    if not uri.startswith("vless://"):
+        raise ValueError(f"not a vless URI: {uri[:32]}...")
+    parsed = urllib.parse.urlparse(uri)
+    uuid = urllib.parse.unquote(parsed.username or "")
+    host = parsed.hostname
+    port = parsed.port or 443
+    if not uuid or not host:
+        raise ValueError("vless URI missing uuid or host")
+
+    params = urllib.parse.parse_qs(parsed.query)
+    security = (_q(params, "security") or "none").lower()
+    network = (_q(params, "type") or _q(params, "network") or "tcp").lower()
+    flow = _q(params, "flow") or ""
+
+    user: dict[str, Any] = {"id": uuid, "encryption": "none"}
+    # XTLS flow control is a raw-TCP+REALITY feature; setting it on an xhttp
+    # outbound is a startup-time validation error in Xray, not a soft no-op.
+    if flow and network in ("tcp", "raw"):
+        user["flow"] = flow
+
+    stream: dict[str, Any] = {
+        "network": "raw" if network in ("tcp", "raw") else network
+    }
+
+    if security in ("tls", "reality"):
+        sni = _q(params, "sni") or _q(params, "host") or host
+        fp = _q(params, "fp") or _q(params, "fingerprint")
+        if security == "reality":
+            pbk = _q(params, "pbk") or _q(params, "publicKey")
+            if not pbk:
+                raise ValueError(f"REALITY without pbk: {uri[:40]}...")
+            reality: dict[str, Any] = {
+                "show": False,
+                "serverName": sni,
+                "publicKey": pbk,
+            }
+            if fp:
+                reality["fingerprint"] = fp
+            sid = _q(params, "sid") or _q(params, "shortId")
+            if sid:
+                reality["shortId"] = sid
+            spx = _q(params, "spx") or _q(params, "spiderX")
+            if spx:
+                reality["spiderX"] = spx
+            stream["security"] = "reality"
+            stream["realitySettings"] = reality
+        else:
+            tls: dict[str, Any] = {
+                "serverName": sni,
+                "allowInsecure": _qbool(params, "allowInsecure")
+                or _qbool(params, "insecure"),
+            }
+            if fp:
+                tls["fingerprint"] = fp
+            alpn = _q(params, "alpn")
+            if alpn:
+                tls["alpn"] = [p.strip() for p in alpn.split(",") if p.strip()]
+            stream["security"] = "tls"
+            stream["tlsSettings"] = tls
+
+    if network == "ws":
+        ws: dict[str, Any] = {"path": _q(params, "path") or "/"}
+        host_header = _q(params, "host") or _q(params, "sni")
+        if host_header:
+            ws["headers"] = {"Host": host_header}
+        stream["wsSettings"] = ws
+    elif network == "grpc":
+        stream["grpcSettings"] = {
+            "serviceName": _q(params, "serviceName")
+            or _q(params, "service_name")
+            or "",
+        }
+    elif network in ("xhttp", "splithttp"):
+        stream["network"] = "xhttp"
+        stream["xhttpSettings"] = {
+            "path": _q(params, "path") or "/",
+            "host": _q(params, "host") or _q(params, "sni") or host,
+            "mode": _q(params, "mode") or "auto",
+        }
+    elif network in ("httpupgrade", "http_upgrade"):
+        stream["network"] = "httpupgrade"
+        stream["httpupgradeSettings"] = {
+            "path": _q(params, "path") or "/",
+            "host": _q(params, "host") or host,
+        }
+
+    return {
+        "tag": tag,
+        "protocol": "vless",
+        "settings": {"vnext": [{"address": host, "port": int(port), "users": [user]}]},
+        "streamSettings": stream,
+    }
+
+
+def build_xray_config(nodes: list[dict[str, Any]], listen_port: int) -> dict[str, Any]:
+    """Xray-core config: one vless outbound per node behind a leastPing
+    balancer, exposed as a single local SOCKS proxy.
+
+    Xray's built-in Observatory pings every balancer member on a timer, and
+    the leastPing strategy always routes to the fastest member that is
+    currently alive — Xray's own equivalent of sing-box's urltest, applied
+    here to the pool of nodes sing-box itself cannot dial (xhttp/splithttp).
+    sing-box then treats this whole pool as one extra candidate (a local
+    SOCKS outbound) in its own urltest race against natively-supported
+    nodes — see build_config()'s "xray-pool" outbound.
+
+    Also used (with a single-node list) to probe one xhttp node in
+    probe_nodes_http(); a 1-member balancer degrades harmlessly to "use the
+    only member".
+    """
+    tags = [f"x{i}" for i in range(len(nodes))]
+    outbounds = [
+        vless_uri_to_xray_outbound(n["meta"]["raw_uri"], tag)
+        for n, tag in zip(nodes, tags)
+    ]
+    outbounds.append({"tag": "direct", "protocol": "freedom"})
+    outbounds.append({"tag": "block", "protocol": "blackhole"})
+
+    return {
+        "log": {"loglevel": "warning"},
+        "inbounds": [
+            {
+                "tag": "in",
+                "listen": "127.0.0.1",
+                "port": listen_port,
+                "protocol": "socks",
+                "settings": {"auth": "noauth", "udp": True},
+            }
+        ],
+        "outbounds": outbounds,
+        "routing": {
+            "domainStrategy": "AsIs",
+            "balancers": [
+                {"tag": "pool", "selector": tags, "strategy": {"type": "leastPing"}}
+            ],
+            "rules": [{"type": "field", "inboundTag": ["in"], "balancerTag": "pool"}],
+        },
+        "observatory": {
+            "subjectSelector": tags,
+            "probeUrl": "https://www.gstatic.com/generate_204",
+            "probeInterval": "30s",
+        },
+    }
+
+
+def _load_subscription_cache(path: Path) -> list[str]:
+    """Read cached vless:// URIs saved from the last successful fetch."""
+    if not path.is_file():
+        return []
+    return [
+        ln.strip()
+        for ln in path.read_text(encoding="utf-8-sig").splitlines()
+        if ln.strip().startswith("vless://")
+    ]
+
+
+def load_endpoints(
+    path: Path, fetch_subs: bool, sub_cache: Path | None = None
+) -> tuple[list[dict[str, Any]], int]:
     if not path.is_file():
         raise FileNotFoundError(
             f"Missing {path}. Copy secrets/endpoints.example.txt → endpoints.txt and paste a key."
@@ -379,10 +924,33 @@ def load_endpoints(path: Path, fetch_subs: bool) -> tuple[list[dict[str, Any]], 
                     f"INFO: subscription fetched {len(uris)} vless URI(s) from {line[:60]}",
                     file=sys.stderr,
                 )
-            except (urllib.error.URLError, TimeoutError, ValueError) as exc:
-                raise RuntimeError(
-                    f"subscription fetch failed: {line[:80]}: {exc}"
-                ) from exc
+                # Persist the successful fetch so a later outage of the
+                # subscription host degrades to the last known node list
+                # instead of killing the render (daily auto-refresh source).
+                if sub_cache is not None:
+                    sub_cache.parent.mkdir(parents=True, exist_ok=True)
+                    sub_cache.write_text(
+                        # Sort for a stable sha256 between runs: the provider
+                        # shuffles node order on each fetch, which would
+                        # otherwise make the refresh watchdog restart the
+                        # client needlessly on every check.
+                        "\n".join(sorted(uris)) + "\n",
+                        encoding="utf-8",
+                    )
+            except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+                cached = _load_subscription_cache(sub_cache) if sub_cache is not None else []
+                if cached:
+                    print(
+                        f"WARN: subscription fetch failed ({exc}); "
+                        f"using {len(cached)} cached vless URI(s) from last successful fetch "
+                        f"({sub_cache.name})",
+                        file=sys.stderr,
+                    )
+                    uris = cached
+                else:
+                    raise RuntimeError(
+                        f"subscription fetch failed: {line[:80]}: {exc}"
+                    ) from exc
         else:
             # Subscription body pasted directly (base64 blob), for when DPI
             # blocks fetching the subscription URL from this network.
@@ -402,14 +970,9 @@ def load_endpoints(path: Path, fetch_subs: bool) -> tuple[list[dict[str, Any]], 
             except ValueError as exc:
                 print(f"WARN: skip bad URI ({exc})", file=sys.stderr)
                 continue
-            transport = node["outbound"].get("transport", {})
-            if transport.get("type") in ("xhttp", "splithttp"):
-                print(
-                    f"WARN: skip {node['meta']['name']} — xhttp transport is "
-                    "not supported by sing-box; only ws/tcp work",
-                    file=sys.stderr,
-                )
-                continue
+            # xhttp/splithttp nodes are kept, not dropped: they route through
+            # Xray-core instead of sing-box (engine="xray", see B-007 and
+            # build_xray_config()).
             collected.append(node)
 
     if not collected:
@@ -435,8 +998,16 @@ def build_config(
     state_dir: Path | None = None,
     policy_path: Path = POLICY_PATH,
     probe: dict[int, int | None] | None = None,
+    xray_port: int = DEFAULT_XRAY_PORT,
 ) -> dict[str, Any]:
     chosen = nodes[active - 1]
+    # xhttp/splithttp nodes (engine="xray", see B-007) cannot be embedded as
+    # sing-box outbounds at all — parse_vless_uri() only shapes them enough
+    # to carry raw_uri through. They get a single combined slot below
+    # ("xray-pool": a local SOCKS outbound backed by build_xray_config()'s
+    # own leastPing balancer across all of them), never the per-node
+    # treatment native nodes get.
+    xray_nodes = [n for n in nodes if n["meta"].get("engine") == "xray"]
 
     policy = load_policy(policy_path)
     auto = policy["auto"]
@@ -447,8 +1018,8 @@ def build_config(
         "on",
     }
 
-    proxy_domains, proxy_suffixes = _split_domains(policy["proxy_domains"])
-    direct_domains, direct_suffixes = _split_domains(policy["direct_domains"])
+    proxy_suffixes = _split_domains(policy["proxy_domains"])
+    direct_suffixes = _split_domains(policy["direct_domains"])
 
     # --- outbound(s): either one fixed node, or a latency-raced pool ---------
     # Providers often mark tuned routes as "Gemini" or "Roblox". Put matching
@@ -457,14 +1028,16 @@ def build_config(
     # (Only re-sort the list when there is no probe to filter with — the probe
     # path orders the pool by measured latency below, and re-sorting `nodes`
     # here would desync the probe's node indices.)
+    native_nodes = [n for n in nodes if n["meta"].get("engine", "sing-box") != "xray"]
+
     preferred = [
         s.strip().lower()
         for s in str(auto.get("preferred_tags", "")).split(",")
         if s.strip()
     ]
     if preferred and probe is None:
-        nodes = sorted(
-            nodes,
+        native_nodes = sorted(
+            native_nodes,
             key=lambda node: (
                 0
                 if any(
@@ -476,7 +1049,7 @@ def build_config(
         )
 
     proxy_outbounds: list[dict[str, Any]] = []
-    if auto_on and len(nodes) > 1:
+    if auto_on and (len(native_nodes) + (1 if xray_nodes else 0)) > 1:
         try:
             candidates = max(2, int(str(auto.get("candidates", "12")).strip()))
         except ValueError:
@@ -493,6 +1066,8 @@ def build_config(
             # still wins when it is roughly as fast as the leader.
             effective: list[tuple[int, int, dict[str, Any]]] = []
             for i, node in enumerate(nodes):
+                if node["meta"].get("engine") == "xray":
+                    continue  # handled separately via the xray-pool outbound
                 lat = probe.get(i)
                 if lat is None:
                     nm = str((node.get("meta") or {}).get("name") or f"#{i + 1}")
@@ -514,9 +1089,9 @@ def build_config(
                     "WARN: живых нод меньше двух — оставляю пул как есть",
                     file=sys.stderr,
                 )
-                pool = nodes[:candidates]
+                pool = native_nodes[:candidates]
         else:
-            pool = nodes[:candidates]
+            pool = native_nodes[:candidates]
         member_tags: list[str] = []
         for idx, node in enumerate(pool, start=1):
             ob = dict(node["outbound"])
@@ -536,6 +1111,23 @@ def build_config(
             ob["tag"] = f"{idx:02d} {clean}".strip() if clean else f"node-{idx:02d}"
             proxy_outbounds.append(ob)
             member_tags.append(ob["tag"])
+        if xray_nodes:
+            # The whole xhttp/splithttp pool (see B-007) races as a single
+            # extra candidate: Xray's own leastPing balancer has already
+            # picked its best member by the time sing-box dials this socks
+            # outbound, so sing-box's urltest is really racing "best native
+            # node" against "best xray-managed node", not against 40+
+            # individual xhttp entries it could not embed anyway.
+            xray_tag = "xray-pool"
+            proxy_outbounds.append(
+                {
+                    "type": "socks",
+                    "tag": xray_tag,
+                    "server": "127.0.0.1",
+                    "server_port": xray_port,
+                }
+            )
+            member_tags.append(xray_tag)
         proxy_outbounds.append(
             {
                 "type": "urltest",
@@ -547,8 +1139,20 @@ def build_config(
             }
         )
     else:
-        single = dict(chosen["outbound"])
-        single["tag"] = "proxy"
+        if chosen["meta"].get("engine") == "xray":
+            # chosen["outbound"] is not dialable by sing-box at all for an
+            # xhttp/splithttp node (see B-007) — route to it via the local
+            # Xray instance instead. A single-member "balancer" there
+            # degrades harmlessly to "use the only node".
+            single = {
+                "type": "socks",
+                "tag": "proxy",
+                "server": "127.0.0.1",
+                "server_port": xray_port,
+            }
+        else:
+            single = dict(chosen["outbound"])
+            single["tag"] = "proxy"
         proxy_outbounds.append(single)
 
     dns: dict[str, Any] = {
@@ -570,12 +1174,8 @@ def build_config(
     # whole split. This must apply even when rule-sets are disabled, so it is
     # built unconditionally and only the rule_set-based DNS rules are gated.
     proxy_dns_rules: list[dict[str, Any]] = []
-    if proxy_domains:
-        proxy_dns_rules.append({"domain": proxy_domains, "server": "dns-remote"})
     if proxy_suffixes:
-        proxy_dns_rules.append(
-            {"domain_suffix": proxy_suffixes, "server": "dns-remote"}
-        )
+        proxy_dns_rules.append({"domain_suffix": proxy_suffixes, "server": "dns-remote"})
 
     inbounds: list[dict[str, Any]] = [
         {
@@ -639,12 +1239,8 @@ def build_config(
     if proc_paths:
         route_rules.append(route_to("proxy", process_path=proc_paths))
 
-    if direct_domains:
-        route_rules.append(route_to("direct", domain=direct_domains))
     if direct_suffixes:
         route_rules.append(route_to("direct", domain_suffix=direct_suffixes))
-    if proxy_domains:
-        route_rules.append(route_to("proxy", domain=proxy_domains))
     if proxy_suffixes:
         route_rules.append(route_to("proxy", domain_suffix=proxy_suffixes))
 
@@ -802,9 +1398,74 @@ def main() -> int:
         default=16,
         help="Parallel probe threads (default: 16)",
     )
+    ap.add_argument(
+        "--no-http-probe",
+        action="store_true",
+        help="Skip the per-node HTTP probe (B-010); rely on TCP probe/name filter only",
+    )
+    ap.add_argument(
+        "--http-probe-timeout",
+        type=float,
+        default=PROBE_TIMEOUT,
+        help="Per-node HTTP request timeout+startup wait in seconds (default: 5.0)",
+    )
+    ap.add_argument(
+        "--http-probe-anthropic",
+        default=PROBE_DEFAULT_ANTHROPIC_OK,
+        help="Space/comma-separated acceptable statuses for api.anthropic.com (default: 401)",
+    )
+    ap.add_argument(
+        "--http-probe-youtube",
+        default=PROBE_DEFAULT_YOUTUBE_OK,
+        help="Space/comma-separated acceptable statuses for www.youtube.com (default: 200)",
+    )
+    ap.add_argument(
+        "--http-probe-cache-ttl",
+        type=float,
+        default=PROBE_CACHE_TTL_HOURS,
+        help="Hours to reuse a passed node without re-probing (default: 6.0)",
+    )
+    ap.add_argument(
+        "--xray-port",
+        type=int,
+        default=DEFAULT_XRAY_PORT,
+        help="Local SOCKS port for the Xray-managed xhttp/splithttp pool (default: 2081)",
+    )
+    ap.add_argument(
+        "--no-xray",
+        action="store_true",
+        help=(
+            "Drop xhttp/splithttp nodes entirely instead of routing them "
+            "through Xray-core (old behavior, pre-B-007 fix; use if Xray is "
+            "unavailable and you would rather have a clean sing-box-only pool)"
+        ),
+    )
     args = ap.parse_args()
 
-    nodes, active = load_endpoints(args.endpoints, fetch_subs=args.fetch)
+    sub_cache = (args.state_dir or args.out.parent) / "last-subscription.txt"
+    nodes, active = load_endpoints(
+        args.endpoints, fetch_subs=args.fetch, sub_cache=sub_cache
+    )
+    if args.no_xray:
+        dropped = [n for n in nodes if n["meta"].get("engine") == "xray"]
+        if dropped:
+            print(
+                f"INFO: --no-xray: dropping {len(dropped)} xhttp/splithttp node(s)",
+                file=sys.stderr,
+            )
+        old_active_node = nodes[active - 1] if 0 < active <= len(nodes) else None
+        kept_nodes = [n for n in nodes if n["meta"].get("engine") != "xray"]
+        if not kept_nodes:
+            raise RuntimeError(
+                "--no-xray dropped every node (subscription is xhttp-only); "
+                "remove --no-xray or add sing-box-compatible nodes"
+            )
+        nodes = kept_nodes
+        # Re-anchor ACTIVE to the (possibly shorter, possibly reindexed) list.
+        if old_active_node is not None and any(n is old_active_node for n in nodes):
+            active = next(i for i, n in enumerate(nodes) if n is old_active_node) + 1
+        else:
+            active = 1
 
     _pol = load_policy(args.policy)
     _auto_on = str(_pol["auto"].get("enabled", "yes")).strip().lower() in {
@@ -847,6 +1508,66 @@ def main() -> int:
                     file=sys.stderr,
                 )
 
+    # --- B-010: per-node HTTP probe (re-filter the live pool by actual API
+    # access, not just TCP reachability) --------------------------------------
+    # A node that passes the TCP ping can still be blocked upstream (403 on
+    # Anthropic) or fail YouTube (redirect/consent) — exactly the churn that
+    # makes a static endpoints.txt stale within days. Dial Anthropic + YouTube
+    # through a throwaway sing-box instance per node and keep only nodes that
+    # answer as expected. This is the "auto-refilter at each build" step.
+    if not args.check_only and not args.no_http_probe:
+        sing_box = find_sing_box()
+        xray_bin = None if args.no_xray else find_xray()
+        if sing_box is None:
+            print(
+                "WARN: sing-box не найден — пропускаю HTTP-проверку нод "
+                "(B-010); полагаюсь на TCP-probe и ручной фильтр",
+                file=sys.stderr,
+            )
+        else:
+            if xray_bin is None and any(n["meta"].get("engine") == "xray" for n in nodes):
+                print(
+                    "WARN: xray не найден — xhttp/splithttp-ноды не пройдут "
+                    "HTTP-проверку (см. B-007); установите xray-core или "
+                    "передайте --no-xray",
+                    file=sys.stderr,
+                )
+            cache_path = (args.state_dir or args.out.parent) / "node-probe-cache.json"
+            passing, _http_verdict = probe_nodes_http(
+                nodes,
+                sing_box,
+                xray=xray_bin,
+                timeout=args.http_probe_timeout,
+                anthropic_ok=args.http_probe_anthropic,
+                youtube_ok=args.http_probe_youtube,
+                cache_path=cache_path,
+                cache_ttl_hours=args.http_probe_cache_ttl,
+            )
+            if not passing:
+                print(
+                    "WARN: ни одна нода не прошла HTTP-проверку — "
+                    "оставляю весь список (без фильтра B-010)",
+                    file=sys.stderr,
+                )
+            elif len(passing) != len(nodes):
+                kept = len(nodes)
+                old_active_node = nodes[active - 1] if 0 < active <= len(nodes) else None
+                passing_sorted = sorted(passing)
+                nodes = [nodes[i] for i in passing_sorted]
+                if probe is not None:
+                    probe = {j: probe[old_i] for j, old_i in enumerate(passing_sorted)}
+                # Recompute ACTIVE against the reduced list: map the previously
+                # pinned node to its new position; if it was filtered out, fall
+                # back to the first surviving node.
+                if old_active_node is not None and any(n is old_active_node for n in nodes):
+                    active = next(i for i, n in enumerate(nodes) if n is old_active_node) + 1
+                else:
+                    active = 1
+                print(
+                    f"...после HTTP-проверки осталось {len(nodes)}/{kept} нод",
+                    file=sys.stderr,
+                )
+
     meta = nodes[active - 1]["meta"]
     print(
         f"Active outbound #{active}/{len(nodes)}: "
@@ -875,12 +1596,34 @@ def main() -> int:
         state_dir=args.state_dir,
         policy_path=args.policy,
         probe=probe,
+        xray_port=args.xray_port,
     )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(
         json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
+
+    # Sibling Xray-core config for the xhttp/splithttp pool (B-007). Written
+    # even when empty is not desired: absence of this file is exactly how
+    # the Windows launcher decides whether to start xray.exe at all.
+    xray_nodes_final = [n for n in nodes if n["meta"].get("engine") == "xray"]
+    xray_config_path = args.out.parent / "xray-config.json"
+    if xray_nodes_final:
+        xray_cfg = build_xray_config(xray_nodes_final, args.xray_port)
+        xray_config_path.write_text(
+            json.dumps(xray_cfg, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        print(
+            f"Wrote {xray_config_path} ({len(xray_nodes_final)} xhttp/splithttp node(s), "
+            f"port {args.xray_port})",
+            file=sys.stderr,
+        )
+    elif xray_config_path.is_file():
+        # No xray-managed nodes survived this render — remove the stale file
+        # so the launcher does not start xray.exe pointed at a dead pool.
+        xray_config_path.unlink()
 
     index_path = args.out.parent / "outbounds.jsonl"
     with index_path.open("w", encoding="utf-8") as fh:
