@@ -166,10 +166,18 @@ function Start-GolemProcess {
     Start-Process -FilePath 'PowerShell.exe' -Verb RunAs -WindowStyle Hidden `
         -WorkingDirectory $env:SystemRoot `
         -ArgumentList @('-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File', $runner)
-    Write-Info 'Жду инициализации (5 сек)...'
-    Start-Sleep -Seconds 5
-    if (Get-Process sing-box -ErrorAction SilentlyContinue) {
-        Write-Ok 'sing-box запущен'
+    # Рендер из подписки: поиск живых нод (TCP+HTTP пробинг 55 серверов)
+    # занимает 30-90 сек до старта самого sing-box. Ждём появления порта
+    # 2080 (не по наличие процесса), чтобы не сообщать ложный «не запустился».
+    Write-Info 'Рендер подписки идёт (поиск живых нод) — жду порт :2080...'
+    $deadline = (Get-Date).AddSeconds(150)
+    $up = $false
+    while ((Get-Date) -lt $deadline) {
+        if (Get-NetTCPConnection -LocalPort 2080 -State Listen -ErrorAction SilentlyContinue) { $up = $true; break }
+        Start-Sleep -Seconds 2
+    }
+    if ($up) {
+        Write-Ok 'sing-box запущен и слушает :2080'
     } else {
         Write-Err 'sing-box НЕ запустился — проверьте логи (VPN logs)'
         Show-StartLog
