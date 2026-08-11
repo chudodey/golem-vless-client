@@ -22,6 +22,8 @@ $shortcuts = @(
     @{ Name = '5. Список серверов';     Cmd = 'nodes';   Icon = 'imageres.dll,172' }
     @{ Name = '6. Перезапустить';       Cmd = 'restart'; Icon = 'imageres.dll,228' }
     @{ Name = '7. Применить настройки'; Cmd = 'reload';  Icon = 'imageres.dll,166' }
+    @{ Name = '8. Телеметрия';          Cmd = 'stats';   Icon = 'imageres.dll,218' }
+    @{ Name = '9. Сводка';              Cmd = 'report';  Icon = 'imageres.dll,217' }
 )
 
 $shell = New-Object -ComObject WScript.Shell

@@ -1343,6 +1343,46 @@ def build_config(
     }
 
 
+def _record_render_stats(
+    nodes: list[dict[str, Any]],
+    active: int,
+    probe: dict[int, int | None] | None,
+    http_verdict: dict[int, tuple[int | None, int | None]] | None,
+    passing: set[int],
+    *,
+    state_dir: Path,
+) -> None:
+    """Best-effort B-015 telemetry dump; never let stats break the render."""
+    try:
+        import stats as _stats
+    except ImportError:
+        return
+    http_results = None
+    if http_verdict:
+        if passing and len(passing) != len(nodes):
+            order = sorted(passing)
+        else:
+            order = list(range(len(nodes)))
+        http_results = {
+            j: http_verdict[ii]
+            for j, ii in enumerate(order)
+            if ii in http_verdict and http_verdict[ii] is not None
+        }
+    try:
+        _stats.record_render(
+            state_dir,
+            nodes=nodes,
+            active=active,
+            provider=(nodes[active - 1].get("meta") or {}).get("provider")
+            if 0 < active <= len(nodes)
+            else None,
+            probe=probe,
+            http_results=http_results,
+        )
+    except Exception as exc:  # noqa: BLE001 — telemetry must be fail-soft
+        print(f"WARN: stats skipped: {exc}", file=sys.stderr)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Render a sing-box config from endpoints.txt + policy.conf"
@@ -1533,6 +1573,8 @@ def main() -> int:
     # makes a static endpoints.txt stale within days. Dial Anthropic + YouTube
     # through a throwaway sing-box instance per node and keep only nodes that
     # answer as expected. This is the "auto-refilter at each build" step.
+    passing: set[int] = set()
+    http_verdict: dict[int, tuple[int | None, int | None]] | None = None
     if not args.check_only and not args.no_http_probe:
         sing_box = find_sing_box()
         xray_bin = None if args.no_xray else find_xray()
@@ -1551,7 +1593,7 @@ def main() -> int:
                     file=sys.stderr,
                 )
             cache_path = (args.state_dir or args.out.parent) / "node-probe-cache.json"
-            passing, _http_verdict = probe_nodes_http(
+            passing, http_verdict = probe_nodes_http(
                 nodes,
                 sing_box,
                 xray=xray_bin,
@@ -1585,6 +1627,19 @@ def main() -> int:
                     f"...после HTTP-проверки осталось {len(nodes)}/{kept} нод",
                     file=sys.stderr,
                 )
+
+    # Record render telemetry (B-015). `nodes`/`probe` are already in their
+    # final filtered order here; HTTP verdicts are keyed by original index and
+    # `passing` maps them back onto the surviving list.
+    if not args.check_only:
+        _record_render_stats(
+            nodes,
+            active,
+            probe,
+            http_verdict,
+            passing,
+            state_dir=args.state_dir or args.out.parent,
+        )
 
     meta = nodes[active - 1]["meta"]
     print(

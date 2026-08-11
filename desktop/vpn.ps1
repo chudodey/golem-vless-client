@@ -2,11 +2,11 @@
 # Вызывается ярлыками с рабочего стола; сам ничего не решает,
 # только передаёт команду vpnctl на сервере.
 #
-#   vpn.ps1 on | off | restart | status | fastest | nodes | reload
+#   vpn.ps1 on | off | restart | status | fastest | nodes | reload | stats | report
 
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('on', 'off', 'restart', 'status', 'fastest', 'nodes', 'reload')]
+    [ValidateSet('on', 'off', 'restart', 'status', 'fastest', 'nodes', 'reload', 'stats', 'report')]
     [string]$Command = 'status'
 )
 
@@ -23,6 +23,8 @@ $titles = @{
     fastest = 'ПОИСК БЫСТРЕЙШЕГО СЕРВЕРА'
     nodes   = 'СПИСОК СЕРВЕРОВ'
     reload  = 'ПРИМЕНЕНИЕ policy.conf'
+    stats   = 'ТЕЛЕМЕТРИЯ (СБОР+СВОДКА)'
+    report  = 'ТЕЛЕМЕТРИЯ (СВОДКА)'
 }
 
 Write-Host ''

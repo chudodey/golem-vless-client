@@ -22,6 +22,7 @@ if (-not (Test-Path -LiteralPath $secret)) {
 
 New-Item -ItemType Directory -Force -Path $clientRoot,$config,$bin,$state | Out-Null
 Copy-Item -Force "$source\scripts\render_config.py" "$bin\render_config.py"
+Copy-Item -Force "$source\scripts\stats.py" "$bin\stats.py"
 Copy-Item -Force "$source\policy.conf" "$config\policy.conf"
 Copy-Item -Force $secret "$config\endpoints.txt"
 
@@ -78,7 +79,7 @@ $desktop = [Environment]::GetFolderPath('Desktop')
 $shortcutDir = Join-Path $desktop 'Golem VPN Windows'
 New-Item -ItemType Directory -Force -Path $shortcutDir | Out-Null
 $shell = New-Object -ComObject WScript.Shell
-foreach ($command in 'status','start','stop','restart','logs','diagnose','refresh') {
+foreach ($command in 'status','start','stop','restart','logs','diagnose','refresh','stats','report') {
   $shortcut = $shell.CreateShortcut((Join-Path $shortcutDir "VPN $command.lnk"))
   $shortcut.TargetPath = 'PowerShell.exe'
   $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$bin\GolemVpn.ps1`" $command -Wait"

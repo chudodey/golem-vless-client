@@ -1,0 +1,12 @@
+[Unit]
+Description=Golem VLESS provider/node telemetry collection (B-015)
+After=golem-vless-client.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+# --fetch: endpoints.txt may hold an https subscription URL; harmless for
+# vless:// lines or a pasted base64 blob (falls back to state/last-subscription.txt
+# when the subscription host is unreachable).
+ExecStart=/usr/bin/python3 /opt/golem-vless/scripts/stats.py collect --endpoints /etc/golem-vless/endpoints.txt --state-dir /var/lib/golem-vless --fetch

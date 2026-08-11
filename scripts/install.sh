@@ -23,6 +23,10 @@ ETC="${ETC:-/etc/golem-vless}"
 SINGBOX_VERSION="${SINGBOX_VERSION:-1.13.16}"
 UNIT_SRC="$ROOT/systemd/golem-vless-client.service"
 UNIT_DST="/etc/systemd/system/golem-vless-client.service"
+STATS_UNIT_SRC="$ROOT/systemd/golem-vless-stats.service"
+STATS_TIMER_SRC="$ROOT/systemd/golem-vless-stats.timer"
+STATS_UNIT_DST="/etc/systemd/system/golem-vless-stats.service"
+STATS_TIMER_DST="/etc/systemd/system/golem-vless-stats.timer"
 
 log()  { echo ">> $*"; }
 die()  { echo "ОШИБКА: $*" >&2; exit 1; }
@@ -77,7 +81,7 @@ mkdir -p "$PREFIX/generated" "$PREFIX/scripts" "$PREFIX/systemd" "$STATE" "$ETC"
 cp -a "$ROOT/README.md" "$PREFIX/" 2>/dev/null || true
 cp -a "$ROOT/scripts/." "$PREFIX/scripts/"
 cp -a "$ROOT/systemd/." "$PREFIX/systemd/"
-chmod +x "$PREFIX/scripts/render_config.py" "$PREFIX/scripts/vpnctl"
+chmod +x "$PREFIX/scripts/render_config.py" "$PREFIX/scripts/stats.py" "$PREFIX/scripts/vpnctl"
 
 # policy.conf и endpoints.txt — пользовательские данные; ставим шаблон
 # только если файла ещё нет, чтобы повторный запуск install.sh не затирал
@@ -113,6 +117,20 @@ sed -e "s#/opt/golem-vless#${PREFIX}#g" \
 chmod 0644 "$UNIT_DST"
 systemctl daemon-reload
 
+# --- 5. Телеметрия (B-015): stats-таймер каждые 30 минут -------------------
+log "ставлю телеметрию (stats-таймер, каждые 30 мин)…"
+sed -e "s#/opt/golem-vless#${PREFIX}#g" \
+    -e "s#/etc/golem-vless#${ETC}#g" \
+    -e "s#/var/lib/golem-vless#${STATE}#g" \
+    "$STATS_UNIT_SRC" > "$STATS_UNIT_DST"
+cp -a "$STATS_TIMER_SRC" "$STATS_TIMER_DST"
+chmod 0644 "$STATS_UNIT_DST" "$STATS_TIMER_DST"
+systemctl daemon-reload
+systemctl enable --now golem-vless-stats.timer >/dev/null 2>&1 \
+  || systemctl enable golem-vless-stats.timer >/dev/null 2>&1
+systemctl start golem-vless-stats.timer 2>/dev/null || true
+log "stats-таймер установлен: systemctl status golem-vless-stats.timer"
+
 cat <<EOF
 
 Установлено. Дальше:
@@ -124,6 +142,7 @@ cat <<EOF
   5) проверить:         vpnctl status
      (второй SSH-сессией, если ставите на удалённый сервер — первое включение
      TUN может на секунду оборвать текущее соединение)
+  6) телеметрия:        vpnctl stats   (сбор + сводка; авто-сбор каждые 30 мин)
 
 Подробности и разбор частых проблем — в README.md.
 EOF

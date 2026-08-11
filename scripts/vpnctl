@@ -10,6 +10,8 @@
 #   vpnctl fastest               немедленно перепроверить и переключиться на быстрейший
 #   vpnctl check <имя>            проверить, уходит ли программа <имя> через VPN
 #   vpnctl policy                открыть policy.conf в редакторе
+#   vpnctl stats                 собрать телеметрию и показать сводку (B-015)
+#   vpnctl report                показать сводку телеметрии (без сбора)
 #   vpnctl logs [N]              последние N строк журнала (по умолчанию 50)
 #
 # Переменные окружения (переопределить, если ставили не по умолчанию):
@@ -168,6 +170,21 @@ cmd_logs() {
   journalctl -u "$SVC" --no-pager -n "$n"
 }
 
+cmd_stats() {
+  local state="${GOLEM_STATE:-/var/lib/golem-vless}"
+  local extra=()
+  [ "${FETCH:-1}" = 1 ] && extra+=(--fetch)
+  echo "собираю телеметрию…"
+  python3 "$BASE/scripts/stats.py" collect \
+    --endpoints "$ENDPOINTS" --state-dir "$state" "${extra[@]}"
+  python3 "$BASE/scripts/stats.py" report --state-dir "$state"
+}
+
+cmd_report() {
+  python3 "$BASE/scripts/stats.py" report \
+    --state-dir "${GOLEM_STATE:-/var/lib/golem-vless}"
+}
+
 case "${1:-status}" in
   on|start)    systemctl start "$SVC"   && echo "${c_ok}VPN включён${c_off}" ;;
   off|stop)    systemctl stop "$SVC"    && echo "VPN выключен" ;;
@@ -178,6 +195,8 @@ case "${1:-status}" in
   fastest)     cmd_fastest ;;
   check)       cmd_check "${2:-}" ;;
   logs)        cmd_logs "${2:-}" ;;
+  stats)       cmd_stats ;;
+  report)      cmd_report ;;
   policy)      "${EDITOR:-nano}" "$POLICY" ;;
   *)
     sed -n '2,20p' "$0" | sed 's/^# \?//'

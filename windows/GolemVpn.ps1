@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]
-param([ValidateSet('status','start','stop','restart','logs','diagnose','refresh','help')] [string]$Command = 'status', [switch]$Wait)
+param([ValidateSet('status','start','stop','restart','logs','diagnose','refresh','stats','report','help')] [string]$Command = 'status', [switch]$Wait)
 
 $ErrorActionPreference = 'Stop'
 $root  = Join-Path $env:LOCALAPPDATA 'GolemVLESS'
@@ -348,11 +348,32 @@ switch ($Command) {
         Write-Ok 'Готово. Смотрите state\subscription-refresh.log'
     }
 
+    'stats' {
+        Write-Header 'ТЕЛЕМЕТРИЯ (СБОР)'
+        $py = Join-Path $root 'bin\stats.py'
+        if (-not (Test-Path -LiteralPath $py)) {
+            Write-Err "Не найден stats.py: $py — перезапустите Install-GolemVless.ps1"
+            break
+        }
+        & python $py collect --endpoints (Join-Path $root 'config\endpoints.txt') --state-dir $state --fetch
+        & python $py report --state-dir $state
+    }
+
+    'report' {
+        Write-Header 'ТЕЛЕМЕТРИЯ (СВОДКА)'
+        $py = Join-Path $root 'bin\stats.py'
+        if (-not (Test-Path -LiteralPath $py)) {
+            Write-Err "Не найден stats.py: $py — перезапустите Install-GolemVless.ps1"
+            break
+        }
+        & python $py report --state-dir $state
+    }
+
     'help' {
         Write-Header 'УПРАВЛЕНИЕ VPN'
         Write-Host "  GolemVpn.ps1 <команда> [-Wait]
 "
-        foreach ($c in 'status','start','stop','restart','logs','diagnose','refresh') {
+        foreach ($c in 'status','start','stop','restart','logs','diagnose','refresh','stats','report') {
             switch ($c) {
                 'status'   { $d = 'состояние задач, процессов, сервер, прокси, IP' }
                 'start'    { $d = 'включить VPN' }
@@ -361,6 +382,8 @@ switch ($Command) {
                 'logs'     { $d = 'последние строки лога sing-box' }
                 'diagnose' { $d = 'отчёт state\diagnostic.txt' }
                 'refresh'  { $d = 'обновить подписку и перезапустить при изменении' }
+                'stats'    { $d = 'собрать телеметрию нод и показать сводку (B-015)' }
+                'report'   { $d = 'показать сводку телеметрии (без сбора)' }
             }
             Write-Host "  $c".PadRight(16) $d
         }

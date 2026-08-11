@@ -12,11 +12,15 @@ UNIT="/etc/systemd/system/golem-vless-client.service"
 
 [[ "$(id -u)" -eq 0 ]] || { echo "запустите от root (sudo bash scripts/uninstall.sh)" >&2; exit 1; }
 
-echo ">> останавливаю сервис…"
+echo ">> останавливаю сервисы…"
 systemctl disable --now golem-vless-client 2>/dev/null || true
+systemctl disable --now golem-vless-stats.timer 2>/dev/null || true
 
-echo ">> удаляю юнит и бинарники…"
-rm -f "$UNIT" /usr/local/bin/vpnctl /usr/local/bin/sing-box
+echo ">> удаляю юниты и бинарники…"
+rm -f "$UNIT" \
+      /etc/systemd/system/golem-vless-stats.service \
+      /etc/systemd/system/golem-vless-stats.timer \
+      /usr/local/bin/vpnctl /usr/local/bin/sing-box
 systemctl daemon-reload
 
 echo ">> удаляю $PREFIX и $STATE…"

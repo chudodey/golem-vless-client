@@ -346,3 +346,34 @@ items:
     notes: >
       В т.ч. зафиксирован 55МБ err-лог повторов "warning: replicate interface"
       — полезной информации там нет, ротация снимает проблему.
+
+  - id: B-015
+    title: Телеметрия качества провайдера/нод (stats.py, автосбор 24/7)
+    status: done
+    priority: high
+    area: core
+    created: 2026-08-12
+    description: >
+      Непрерывное наблюдение за качеством нод, чтобы решать вопросы вроде
+      "какие страны стабильнее всего" и (при нескольких провайдерах) "кого
+      выбрать" на данных, а не по ощущениям. scripts/stats.py ведёт
+      append-only журнал событий в <state>/stats/events-YYYY-MM.jsonl (born,
+      died, seen, probe_tcp, probe_http, render, selection); индентичность ноды
+      — sha256(server:port:transport). render_config.py пишет события при
+      каждой сборке конфига (хук _record_render_stats, пол 55 нод — уже
+      работает с первого дня). На Linux-сервере systemd-таймер
+      golem-vless-stats.timer собирает данные каждые 30 минут
+      (golem-vless-stats.service, oneshot, полный цикл с HTTP-пробой B-010,
+      кэш passed-нод 6 ч делает его почти бесплатным).
+    acceptance: >
+      `python3 scripts/stats.py report` (или `vpnctl stats` на сервере)
+      печатает таблицы: провайдеры, время жизни нод, страны, динамика по
+      месяцам, текущий выбор клиента. Таймер golem-vless-stats.timer активен
+      на DELL-сервере; журнал событий пополняется каждые 30 минут.
+    notes: >
+      Сбор фичи: Windows — команды `GolemVpn.ps1 stats|report`, stats.py
+      копируется в bin; Linux — `vpnctl stats|report`, юниты в systemd/,
+      install.sh ставит и включает таймер. HTTP-проба на сервере потребовала
+      sing-box 1.13.16 (1.11.15 не поднимал throwaway-конфиг, вердикты были
+      None). Решение о переносимости: лёгкая TCP-проба всегда, HTTP-проба
+      с кэшем; --light отключает HTTP для экономного режима.
