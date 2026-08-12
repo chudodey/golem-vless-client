@@ -55,7 +55,149 @@ POLICY_DEFAULTS = {
     "candidates": "12",
     "tolerance": "50",
     "test_url": "https://www.gstatic.com/generate_204",
+    # Optional temporary country lock (see _node_iso2 / main): comma list of
+    # ISO alpha-2 (US, GB, DE...) or country names. Empty = no filter.
+    "countries": "",
 }
+
+
+# ── country matching for the [auto-select] `countries` filter ────────────────
+# Node names are provider-specific ("01 Austria 🇦🇹", "US 03 · Los Angeles",
+# "🇺🇸 05 New York", "Россия → [Госуслуги]"). We derive a best-effort ISO
+# alpha-2: exact flag emoji first, then name tokens against English/Russian
+# names and common two-letter location codes. Unknown names yield None — under
+# an active filter such a node is dropped with a warning (fail closed: during
+# e.g. a card payment you do not want a misidentified exit to win).
+
+_ISO2_BY_NAME = {
+    "united states": "US", "usa": "US", "us": "US", "america": "US",
+    "states": "US", "united states of america": "US",
+    "united kingdom": "GB", "uk": "GB", "great britain": "GB",
+    "britain": "GB", "england": "GB", "scotland": "GB", "wales": "GB",
+    "northern ireland": "GB",
+    "germany": "DE", "deutschland": "DE",
+    "netherlands": "NL", "holland": "NL",
+    "russia": "RU", "russian federation": "RU",
+    "sweden": "SE", "norway": "NO", "denmark": "DK", "finland": "FI",
+    "iceland": "IS", "estonia": "EE", "latvia": "LV", "lithuania": "LT",
+    "poland": "PL", "czech republic": "CZ", "czechia": "CZ", "slovakia": "SK",
+    "hungary": "HU", "romania": "RO", "bulgaria": "BG", "serbia": "RS",
+    "croatia": "HR", "slovenia": "SI", "bosnia": "BA", "albania": "AL",
+    "north macedonia": "MK", "macedonia": "MK", "greece": "GR",
+    "turkey": "TR", "cyprus": "CY", "malta": "MT",
+    "france": "FR", "italy": "IT", "spain": "ES", "portugal": "PT",
+    "switzerland": "CH", "austria": "AT", "belgium": "BE", "ireland": "IE",
+    "luxembourg": "LU",
+    "canada": "CA", "australia": "AU", "new zealand": "NZ",
+    "japan": "JP", "south korea": "KR", "korea": "KR", "singapore": "SG",
+    "hong kong": "HK", "taiwan": "TW", "china": "CN", "india": "IN",
+    "indonesia": "ID", "malaysia": "MY", "thailand": "TH", "vietnam": "VN",
+    "philippines": "PH", "israel": "IL", "saudi arabia": "SA", "uae": "AE",
+    "united arab emirates": "AE", "qatar": "QA",
+    "kazakhstan": "KZ", "uzbekistan": "UZ", "georgia": "GE", "armenia": "AM",
+    "azerbaijan": "AZ", "moldova": "MD", "belarus": "BY", "ukraine": "UA",
+    "brazil": "BR", "argentina": "AR", "chile": "CL", "peru": "PE",
+    "colombia": "CO", "mexico": "MX", "south africa": "ZA", "egypt": "EG",
+    "nigeria": "NG", "kenya": "KE", "morocco": "MA",
+}
+
+_ISO2_BY_RU_NAME = {
+    "сша": "US", "америка": "US", "штаты": "US", "соединенные штаты": "US",
+    "соединённые штаты": "US",
+    "великобритания": "GB", "англия": "GB", "британия": "GB",
+    "германия": "DE",
+    "нидерланды": "NL", "голландия": "NL",
+    "россия": "RU",
+    "швеция": "SE", "норвегия": "NO", "дания": "DK", "финляндия": "FI",
+    "исландия": "IS", "эстония": "EE", "латвия": "LV", "литва": "LT",
+    "польша": "PL", "чехия": "CZ", "словакия": "SK", "венгрия": "HU",
+    "румыния": "RO", "болгария": "BG", "сербия": "RS", "хорватия": "HR",
+    "словения": "SI", "греция": "GR", "турция": "TR", "кипр": "CY",
+    "франция": "FR", "италия": "IT", "испания": "ES", "португалия": "PT",
+    "швейцария": "CH", "австрия": "AT", "бельгия": "BE", "ирландия": "IE",
+    "люксембург": "LU",
+    "канада": "CA", "австралия": "AU", "новая зеландия": "NZ",
+    "япония": "JP", "южная корея": "KR", "корея": "KR", "сингапур": "SG",
+    "гонконг": "HK", "тайвань": "TW", "китай": "CN", "индия": "IN",
+    "индонезия": "ID", "малайзия": "MY", "таиланд": "TH", "вьетнам": "VN",
+    "филиппины": "PH", "израиль": "IL",
+    "казахстан": "KZ", "узбекистан": "UZ", "грузия": "GE", "армения": "AM",
+    "азербайджан": "AZ", "молдова": "MD", "беларусь": "BY", "украина": "UA",
+    "бразилия": "BR", "аргентина": "AR", "чили": "CL", "перу": "PE",
+    "колумбия": "CO", "мексика": "MX", "южная африка": "ZA", "египет": "EG",
+}
+
+# Common two-letter location prefixes in hostname-style names ("us01.foo",
+# "de3.bar"); matched only when followed by a digit so "us" ≠ "usual".
+_ISO2_HOST_PREFIX = {
+    "us": "US", "gb": "GB", "uk": "GB", "de": "DE", "nl": "NL", "fr": "FR",
+    "se": "SE", "fi": "FI", "no": "NO", "dk": "DK", "ee": "EE", "lv": "LV",
+    "lt": "LT", "pl": "PL", "cz": "CZ", "at": "AT", "ch": "CH", "es": "ES",
+    "it": "IT", "pt": "PT", "gr": "GR", "tr": "TR", "ca": "CA", "au": "AU",
+    "jp": "JP", "kr": "KR", "sg": "SG", "hk": "HK", "tw": "TW", "ru": "RU",
+    "ua": "UA", "kz": "KZ", "br": "BR", "mx": "MX", "ar": "AR", "in": "IN",
+}
+
+_EMOJI_STRIP_RE = re.compile(
+    "["
+    "\U0001F1E6-\U0001F1FF"  # regional indicator symbols (flag emoji)
+    "\U0001F300-\U0001F5FF"
+    "\U0001F600-\U0001F64F"
+    "\U0001F680-\U0001F6FF"
+    "\U00002600-\U000027BF"
+    "\U0000FE0F"
+    "\U00002B00-\U00002BFF"
+    "]+"
+)
+
+
+def _flag_to_iso2(name: str) -> str | None:
+    """ISO alpha-2 from a flag emoji (🇺🇸 → "US"); None if no flag present.
+
+    Flag emoji are two regional-indicator letters; the letters map 1:1 onto
+    ISO alpha-2, so every flag resolves without a lookup table.
+    """
+    m = _EMOJI_STRIP_RE.search(name)
+    if not m:
+        return None
+    seq = m.group(0)
+    if (
+        len(seq) >= 4
+        and "\U0001F1E6" <= seq[0] <= "\U0001F1FF"
+        and "\U0001F1E6" <= seq[1] <= "\U0001F1FF"
+    ):
+        a = chr(ord(seq[0]) - 0x1F1E6 + ord("A"))
+        b = chr(ord(seq[1]) - 0x1F1E6 + ord("A"))
+        return a + b
+    return None
+
+
+def _node_iso2(name: str) -> str | None:
+    """Best-effort ISO alpha-2 for a node display name, or None if unknown."""
+    flag = _flag_to_iso2(name)
+    if flag:
+        return flag
+    text = _EMOJI_STRIP_RE.sub(" ", name).lower()
+    tokens = [t for t in re.split(r"[^a-zа-яё0-9]+", text) if t]
+    # multi-word names first ("united states", "hong kong", "новая зеландия"),
+    # any window of up to 3 consecutive tokens
+    for width in (3, 2):
+        for i in range(len(tokens) - width + 1):
+            phrase = " ".join(tokens[i : i + width])
+            if phrase in _ISO2_BY_NAME:
+                return _ISO2_BY_NAME[phrase]
+            if phrase in _ISO2_BY_RU_NAME:
+                return _ISO2_BY_RU_NAME[phrase]
+    for tok in tokens:
+        if tok in _ISO2_BY_NAME:
+            return _ISO2_BY_NAME[tok]
+        if tok in _ISO2_BY_RU_NAME:
+            return _ISO2_BY_RU_NAME[tok]
+        # hostname-style prefix: "us01", "de3", "uk2"
+        m = re.match(r"^([a-z]{2})\d+$", tok)
+        if m and m.group(1) in _ISO2_HOST_PREFIX:
+            return _ISO2_HOST_PREFIX[m.group(1)]
+    return None
 
 
 def _strip_comment(line: str) -> str:
@@ -1532,6 +1674,51 @@ def main() -> int:
         "1",
         "on",
     }
+
+    # --- optional country lock ([auto-select] countries = US,GB) ------------
+    # A temporary exit-country pin, e.g. while paying for a service with a US
+    # card. Applied here, before the probes and before both config builders,
+    # so the TCP probe, the B-010 HTTP probe, the urltest pool AND the
+    # xray-managed xhttp pool all see only allowed countries (and ACTIVE keeps
+    # pointing at the same node if it survived the filter). Empty = no filter.
+    countries_raw = str(_pol["auto"].get("countries", "")).strip()
+    if countries_raw:
+        wanted = {c.strip().upper() for c in countries_raw.split(",") if c.strip()}
+        if not wanted:
+            raise RuntimeError(
+                "countries in policy.conf is not empty but parses to nothing "
+                "(comma-separated ISO codes, e.g. countries = US, GB)"
+            )
+        kept_nodes: list[dict[str, Any]] = []
+        for node in nodes:
+            code = _node_iso2(str((node.get("meta") or {}).get("name") or ""))
+            if code in wanted:
+                kept_nodes.append(node)
+            else:
+                print(
+                    f"INFO: countries={','.join(sorted(wanted))}: исключена нода "
+                    f"'{node['meta'].get('name')}' (страна: {code or '?'})",
+                    file=sys.stderr,
+                )
+        if not kept_nodes:
+            raise RuntimeError(
+                "countries filter removed every node "
+                f"(allowed: {','.join(sorted(wanted))}); проверьте имена нод "
+                "в --check-only или уберите строку countries из policy.conf"
+            )
+        old_active_node = nodes[active - 1] if 0 < active <= len(nodes) else None
+        nodes = kept_nodes
+        # Re-anchor ACTIVE against the reduced list (same rule as --no-xray and
+        # the B-010 filter): keep the pinned node if it survived, else #1.
+        if old_active_node is not None and any(n is old_active_node for n in nodes):
+            active = next(i for i, n in enumerate(nodes) if n is old_active_node) + 1
+        else:
+            active = 1
+        print(
+            f"...после фильтра по странам {','.join(sorted(wanted))}: "
+            f"осталось {len(nodes)} нод",
+            file=sys.stderr,
+        )
 
     probe: dict[int, int | None] | None = None
     if not args.check_only and not args.no_probe:
