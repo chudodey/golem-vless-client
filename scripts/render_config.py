@@ -1590,7 +1590,16 @@ def main() -> int:
         "--probe-timeout",
         type=float,
         default=2.0,
-        help="Per-node TCP probe timeout in seconds (default: 2.0)",
+        help="TCP probe connect timeout, seconds",
+    )
+    ap.add_argument(
+        "--probe-out",
+        type=Path,
+        default=None,
+        help=(
+            "Write per-node TCP-probe latency as JSONL ({\"index\": 1, "
+            "\"lat_ms\": 12|null}) for GUI node-quality previews"
+        ),
     )
     ap.add_argument(
         "--probe-concurrency",
@@ -1890,6 +1899,20 @@ def main() -> int:
         for i, n in enumerate(nodes, 1):
             row = {"index": i, "active": i == active, **n["meta"]}
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    # Per-node latency report for UI previews (B-019), index = outbounds.jsonl
+    # index (1-based), lat_ms = null when the TCP probe timed out ("dead").
+    # Written from the FINAL (filtered/reindexed) list, so it always lines up
+    # with outbounds.jsonl even after the B-010 HTTP filter reorders nodes.
+    if args.probe_out and probe is not None:
+        probe_out_path = Path(args.probe_out)
+        with probe_out_path.open("w", encoding="utf-8") as fh:
+            for i, _node in enumerate(nodes, 1):
+                fh.write(json.dumps({"index": i, "lat_ms": probe.get(i - 1)}) + "\n")
+        print(
+            f"Wrote {probe_out_path} ({len(nodes)} probe result(s))",
+            file=sys.stderr,
+        )
 
     print(f"Wrote {args.out}", file=sys.stderr)
     print(f"Wrote {index_path}", file=sys.stderr)

@@ -54,8 +54,8 @@ if (-not (Test-Path -LiteralPath "$bin\xray.exe")) {
   }
 }
 
-$runner = Join-Path $PSScriptRoot 'Run-GolemVless.ps1'; $watchdog = Join-Path $PSScriptRoot 'Watch-GolemVless.ps1'; $control = Join-Path $PSScriptRoot 'GolemVpn.ps1'; $refresh = Join-Path $PSScriptRoot 'Refresh-Subscription.ps1'; $hidden = Join-Path $PSScriptRoot 'Run-Hidden.vbs'
-Copy-Item -Force $runner "$bin\Run-GolemVless.ps1"; Copy-Item -Force $watchdog "$bin\Watch-GolemVless.ps1"; Copy-Item -Force $control "$bin\GolemVpn.ps1"; Copy-Item -Force $refresh "$bin\Refresh-Subscription.ps1"; Copy-Item -Force $hidden "$bin\Run-Hidden.vbs"
+$runner = Join-Path $PSScriptRoot 'Run-GolemVless.ps1'; $watchdog = Join-Path $PSScriptRoot 'Watch-GolemVless.ps1'; $control = Join-Path $PSScriptRoot 'GolemVpn.ps1'; $refresh = Join-Path $PSScriptRoot 'Refresh-Subscription.ps1'; $hidden = Join-Path $PSScriptRoot 'Run-Hidden.vbs'; $country = Join-Path $PSScriptRoot 'CountrySwitch.ps1'
+Copy-Item -Force $runner "$bin\Run-GolemVless.ps1"; Copy-Item -Force $watchdog "$bin\Watch-GolemVless.ps1"; Copy-Item -Force $control "$bin\GolemVpn.ps1"; Copy-Item -Force $refresh "$bin\Refresh-Subscription.ps1"; Copy-Item -Force $hidden "$bin\Run-Hidden.vbs"; Copy-Item -Force $country "$bin\CountrySwitch.ps1"
 # Scheduled tasks run PowerShell through wscript.exe + Run-Hidden.vbs: a
 # console-hosted `powershell.exe -WindowStyle Hidden` still flashes a window
 # for an instant on every trigger (the watchdog runs every 5 minutes and this
@@ -87,6 +87,15 @@ foreach ($command in 'status','start','stop','restart','logs','diagnose','refres
   $shortcut.IconLocation = "$env:SystemRoot\System32\shell32.dll,18"
   $shortcut.Save()
 }
+# Окно выбора страны выхода (B-019): временный режим для оплаты картой.
+$countryShortcut = $shell.CreateShortcut((Join-Path $shortcutDir 'VPN страна выхода (оплата).lnk'))
+$countryShortcut.TargetPath = 'PowerShell.exe'
+$countryShortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$bin\CountrySwitch.ps1`""
+$countryShortcut.WorkingDirectory = $bin
+$countryShortcut.IconLocation = "$env:SystemRoot\System32\shell32.dll,253"
+$countryShortcut.Description = 'Golem VPN: временно ограничить страну выхода (US/GB) для оплаты, затем вернуть рейтинг-автовыбор'
+$countryShortcut.Save()
+Write-Host 'Ярлык «VPN страна выхода (оплата)» добавлен в папку Golem VPN Windows.'
 Write-Host "Установлено. Управление: & '$bin\GolemVpn.ps1' status|start|stop|logs"
 Write-Host 'Перед запуском закройте Durev VPN: два TUN-клиента одновременно конфликтуют.'
 if (-not (Test-Path -LiteralPath $secret)) {
