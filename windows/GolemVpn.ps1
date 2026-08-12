@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]
-param([ValidateSet('status','start','stop','restart','logs','diagnose','refresh','stats','report','help')] [string]$Command = 'status', [switch]$Wait)
+param([ValidateSet('status','start','stop','restart','logs','diagnose','refresh','stats','report','uninstall','help')] [string]$Command = 'status', [switch]$Wait)
 
 $ErrorActionPreference = 'Stop'
 $root  = Join-Path $env:LOCALAPPDATA 'GolemVLESS'
@@ -369,21 +369,48 @@ switch ($Command) {
         & python $py report --state-dir $state
     }
 
+    'uninstall' {
+        Write-Header 'УДАЛЕНИЕ'
+        Write-Warn 'Будут удалены: задачи GolemVLESS(-Watchdog/-Refresh), процессы sing-box/xray,'
+        Write-Warn "  системный прокси, ярлыки «Golem VPN Windows» и весь каталог $root"
+        Write-Host ''
+        $yes = Read-Host '  Удалить клиент полностью? [y/N]'
+        if ($yes -notmatch '^[YyДд]') {
+            Write-Host '  Отменено.'
+            break
+        }
+        Stop-GolemProcess
+        Clear-SystemProxy
+        foreach ($task in 'GolemVLESS','GolemVLESS-Watchdog','GolemVLESS-Refresh') {
+            Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
+        }
+        $shortcutDir = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Golem VPN Windows'
+        if (Test-Path -LiteralPath $shortcutDir) {
+            Remove-Item -Recurse -Force -LiteralPath $shortcutDir
+        }
+        if (Test-Path -LiteralPath $root) {
+            Remove-Item -Recurse -Force -LiteralPath $root
+        }
+        Write-Ok 'Клиент удалён. Каталог обновлений подписки и конфиг испарены вместе с %LOCALAPPDATA%.'
+        Write-Info 'Осталось только: сам репозиторий локально + задача GolemVLESS-Watchdog не существует.'
+    }
+
     'help' {
         Write-Header 'УПРАВЛЕНИЕ VPN'
         Write-Host "  GolemVpn.ps1 <команда> [-Wait]
 "
-        foreach ($c in 'status','start','stop','restart','logs','diagnose','refresh','stats','report') {
+        foreach ($c in 'status','start','stop','restart','logs','diagnose','refresh','stats','report','uninstall') {
             switch ($c) {
-                'status'   { $d = 'состояние задач, процессов, сервер, прокси, IP' }
-                'start'    { $d = 'включить VPN' }
-                'stop'     { $d = 'выключить VPN' }
-                'restart'  { $d = 'перезапустить VPN' }
-                'logs'     { $d = 'последние строки лога sing-box' }
-                'diagnose' { $d = 'отчёт state\diagnostic.txt' }
-                'refresh'  { $d = 'обновить подписку и перезапустить при изменении' }
-                'stats'    { $d = 'собрать телеметрию нод и показать сводку (B-015)' }
-                'report'   { $d = 'показать сводку телеметрии (без сбора)' }
+                'status'    { $d = 'состояние задач, процессов, сервер, прокси, IP' }
+                'start'     { $d = 'включить VPN' }
+                'stop'      { $d = 'выключить VPN' }
+                'restart'   { $d = 'перезапустить VPN' }
+                'logs'      { $d = 'последние строки лога sing-box' }
+                'diagnose'  { $d = 'отчёт state\diagnostic.txt' }
+                'refresh'   { $d = 'обновить подписку и перезапустить при изменении' }
+                'stats'     { $d = 'собрать телеметрию нод и показать сводку (B-015)' }
+                'report'    { $d = 'показать сводку телеметрии (без сбора)' }
+                'uninstall' { $d = 'полное удаление клиента (задачи, процессы, %LOCALAPPDATA%)' }
             }
             Write-Host "  $c".PadRight(16) $d
         }

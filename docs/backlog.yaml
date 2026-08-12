@@ -405,3 +405,28 @@ items:
       (UsePAM, Subsystem sftp). Консоль sshd не касается — пароль на мониторе
       работает всегда. Сеть переопределяется GOLEM_SSH_LAN. Ключевой вход
       сохранён — даже неудачный прогон не отрезает текущую сессию.
+
+  - id: B-017
+    title: README для двух ОС + лицензия MIT + Windows uninstall
+    status: done
+    priority: medium
+    area: docs
+    created: 2026-08-12
+    description: >
+      README перестроен из «Linux-first» в симметричное описание Linux и
+      Windows: установка, настройка (общий policy.conf/endpoints.txt с путями
+      обеих систем), управление (vpnctl / GolemVpn.ps1), обновление подписки,
+      проверка, телеметрия (B-015) и удаление для каждой ОС. Добавлена команда
+      GolemVpn.ps1 uninstall — полное удаление Windows-клиента (задачи
+      GolemVLESS/-Watchdog/-Refresh, процессы sing-box/xray, системный прокси,
+      ярлыки «Golem VPN Windows», %LOCALAPPDATA%\GolemVLESS). В корень
+      добавлен LICENSE (MIT) и секция «Лицензия».
+    acceptance: >
+      README симметрично покрывает установку/настройку/управление/удаление на
+      обеих ОС; `GolemVpn.ps1 uninstall` действительно снимает задачи и
+      каталог; в корне репозитория есть LICENSE.
+    notes: >
+      Лицензия выбрана MIT — стандартный рекомендованный GitHub дефолт для
+      личных проектов. Правообладатель — chudodey (Copyright (c) 2026);
+      строку можно поправить под себя. Windows-клиент требует Python 3 в PATH
+      (рендерер) — теперь это указано в разделе «Требования».
