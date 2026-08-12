@@ -78,10 +78,16 @@ Register-ScheduledTask -Force -TaskName 'GolemVLESS-Refresh' -Action $refreshAct
 $desktop = [Environment]::GetFolderPath('Desktop')
 $shortcutDir = Join-Path $desktop 'Golem VPN Windows'
 New-Item -ItemType Directory -Force -Path $shortcutDir | Out-Null
+# Ярлыки запускаем тем же PowerShell, что у пользователя: pwsh (7), если есть
+# (UTF-8 — флаги стран в выводе отображаются корректно). Планировщик и
+# скрытые задачи как были на powershell.exe (5.1) через wscript, так и остались.
+$shellHost = 'PowerShell.exe'
+$ps7 = Get-Command pwsh.exe -ErrorAction SilentlyContinue
+if ($ps7) { $shellHost = $ps7.Source }
 $shell = New-Object -ComObject WScript.Shell
 foreach ($command in 'status','start','stop','restart','logs','diagnose','refresh','stats','report') {
   $shortcut = $shell.CreateShortcut((Join-Path $shortcutDir "VPN $command.lnk"))
-  $shortcut.TargetPath = 'PowerShell.exe'
+  $shortcut.TargetPath = $shellHost
   $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$bin\GolemVpn.ps1`" $command -Wait"
   $shortcut.WorkingDirectory = $bin
   $shortcut.IconLocation = "$env:SystemRoot\System32\shell32.dll,18"
@@ -89,7 +95,7 @@ foreach ($command in 'status','start','stop','restart','logs','diagnose','refres
 }
 # Окно выбора страны выхода (B-019): временный режим для оплаты картой.
 $countryShortcut = $shell.CreateShortcut((Join-Path $shortcutDir 'VPN страна выхода (оплата).lnk'))
-$countryShortcut.TargetPath = 'PowerShell.exe'
+$countryShortcut.TargetPath = $shellHost
 $countryShortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$bin\CountrySwitch.ps1`""
 $countryShortcut.WorkingDirectory = $bin
 $countryShortcut.IconLocation = "$env:SystemRoot\System32\shell32.dll,253"

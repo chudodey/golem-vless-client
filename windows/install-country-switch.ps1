@@ -32,9 +32,13 @@ Write-Host "[OK] Скопированы render_config.py и CountrySwitch.ps1 ->
 $desktop = [Environment]::GetFolderPath('Desktop')
 $shortcutDir = Join-Path $desktop 'Golem VPN Windows'
 New-Item -ItemType Directory -Force -Path $shortcutDir | Out-Null
+# Ярлык запускаем тем же PowerShell, что у пользователя: pwsh (7), если есть.
+$shellHost = 'PowerShell.exe'
+$ps7 = Get-Command pwsh.exe -ErrorAction SilentlyContinue
+if ($ps7) { $shellHost = $ps7.Source }
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut((Join-Path $shortcutDir 'VPN страна выхода (оплата).lnk'))
-$shortcut.TargetPath = 'PowerShell.exe'
+$shortcut.TargetPath = $shellHost
 $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$bin\CountrySwitch.ps1`""
 $shortcut.WorkingDirectory = $bin
 $shortcut.IconLocation = "$env:SystemRoot\System32\shell32.dll,253"

@@ -27,11 +27,21 @@ $endpoints = Join-Path $cfg 'endpoints.txt'
 $render    = Join-Path $bin 'render_config.py'
 $control   = Join-Path $bin 'GolemVpn.ps1'
 
+# ── под какого PowerShell запускаться в elevated: тот же, что и сейчас ──────
+# PS7 = pwsh.exe в $PSHOME, PS5.1 = powershell.exe (у PS7 его там нет).
+function Get-ShellHost {
+    if ($PSVersionTable.PSVersion.Major -ge 7) {
+        $p = Join-Path $PSHOME 'pwsh.exe'
+        if (Test-Path -LiteralPath $p) { return $p }
+    }
+    return (Join-Path $PSHOME 'powershell.exe')
+}
+
 # ── само-подъём прав (UAC) ───────────────────────────────────────────────────
 if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     $args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
     if ($Country) { $args += $Country }
-    Start-Process -FilePath "$PSHOME\powershell.exe" -Verb RunAs `
+    Start-Process -FilePath (Get-ShellHost) -Verb RunAs `
         -WorkingDirectory $env:SystemRoot -ArgumentList $args | Out-Null
     exit 0
 }

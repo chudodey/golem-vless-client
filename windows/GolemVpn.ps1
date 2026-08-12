@@ -17,11 +17,21 @@ function Wait-Close {
 # Enable/Stop-ScheduledTask и запись системного прокси не работают из
 # неадминистативного окна. Само-поднимаемся, чтобы ярлыки на рабочем столе
 # работали без запуска PowerShell от имени администратора вручную.
+function Get-ShellHost {
+    # Вариант 7 PowerShell (pwsh.exe) или 5.1 (powershell.exe) — тот же, что
+    # сейчас запустил скрипт: у PS7 нет powershell.exe в $PSHOME.
+    if ($PSVersionTable.PSVersion.Major -ge 7) {
+        $p = Join-Path $PSHOME 'pwsh.exe'
+        if (Test-Path -LiteralPath $p) { return $p }
+    }
+    return (Join-Path $PSHOME 'powershell.exe')
+}
+
 if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     $elevArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", $Command)
     if ($Wait) { $elevArgs += '-Wait' }
     try {
-        Start-Process -FilePath "$PSHOME\powershell.exe" -Verb RunAs -WindowStyle Normal `
+        Start-Process -FilePath (Get-ShellHost) -Verb RunAs -WindowStyle Normal `
             -WorkingDirectory $env:SystemRoot -ArgumentList $elevArgs | Out-Null
     } catch {
         Write-Host "  [XX] Не удалось поднять права: $($_.Exception.Message)"
