@@ -3,8 +3,9 @@
 # ─────────────────────────────────────────────────────────────────────────────
 #  Копирует в %LOCALAPPDATA%\GolemVLESS\bin:
 #    • CountrySwitch.ps1 — само окно выбора страны (B-019);
-#    • render_config.py  — обновление рендерера (фильтр стран B-018 и --probe-out)
-#      — важно: без этого bin-копия не поймёт строку countries= в policy.conf;
+#    • render_config.py  — обновление рендерера (фильтр стран B-018, --probe-out
+#      и прямое скачивание подписки мимо системного прокси);
+#    • GolemVpn.ps1      — обновлённая команда управления (пследние правки);
 #  и кладёт на рабочий стол ярлык «VPN страна выхода (оплата).lnk» в папку
 #  «Golem VPN Windows».
 #
@@ -27,7 +28,8 @@ if (-not (Test-Path -LiteralPath $bin)) {
 
 Copy-Item -Force -LiteralPath (Join-Path $source 'scripts\render_config.py') "$bin\render_config.py"
 Copy-Item -Force -LiteralPath (Join-Path $source 'windows\CountrySwitch.ps1') "$bin\CountrySwitch.ps1"
-Write-Host "[OK] Скопированы render_config.py и CountrySwitch.ps1 -> $bin"
+Copy-Item -Force -LiteralPath (Join-Path $source 'windows\GolemVpn.ps1') "$bin\GolemVpn.ps1"
+Write-Host "[OK] Скопированы render_config.py, CountrySwitch.ps1, GolemVpn.ps1 -> $bin"
 
 $desktop = [Environment]::GetFolderPath('Desktop')
 $shortcutDir = Join-Path $desktop 'Golem VPN Windows'

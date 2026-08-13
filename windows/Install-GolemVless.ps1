@@ -54,8 +54,8 @@ if (-not (Test-Path -LiteralPath "$bin\xray.exe")) {
   }
 }
 
-$runner = Join-Path $PSScriptRoot 'Run-GolemVless.ps1'; $watchdog = Join-Path $PSScriptRoot 'Watch-GolemVless.ps1'; $control = Join-Path $PSScriptRoot 'GolemVpn.ps1'; $refresh = Join-Path $PSScriptRoot 'Refresh-Subscription.ps1'; $hidden = Join-Path $PSScriptRoot 'Run-Hidden.vbs'; $country = Join-Path $PSScriptRoot 'CountrySwitch.ps1'
-Copy-Item -Force $runner "$bin\Run-GolemVless.ps1"; Copy-Item -Force $watchdog "$bin\Watch-GolemVless.ps1"; Copy-Item -Force $control "$bin\GolemVpn.ps1"; Copy-Item -Force $refresh "$bin\Refresh-Subscription.ps1"; Copy-Item -Force $hidden "$bin\Run-Hidden.vbs"; Copy-Item -Force $country "$bin\CountrySwitch.ps1"
+$runner = Join-Path $PSScriptRoot 'Run-GolemVless.ps1'; $watchdog = Join-Path $PSScriptRoot 'Watch-GolemVless.ps1'; $control = Join-Path $PSScriptRoot 'GolemVpn.ps1'; $refresh = Join-Path $PSScriptRoot 'Refresh-Subscription.ps1'; $hidden = Join-Path $PSScriptRoot 'Run-Hidden.vbs'; $country = Join-Path $PSScriptRoot 'CountrySwitch.ps1'; $preflight = Join-Path $PSScriptRoot 'Test-GolemTunnelPreflight.ps1'
+Copy-Item -Force $runner "$bin\Run-GolemVless.ps1"; Copy-Item -Force $watchdog "$bin\Watch-GolemVless.ps1"; Copy-Item -Force $control "$bin\GolemVpn.ps1"; Copy-Item -Force $refresh "$bin\Refresh-Subscription.ps1"; Copy-Item -Force $hidden "$bin\Run-Hidden.vbs"; Copy-Item -Force $country "$bin\CountrySwitch.ps1"; Copy-Item -Force $preflight "$bin\Test-GolemTunnelPreflight.ps1"
 # Scheduled tasks run PowerShell through wscript.exe + Run-Hidden.vbs: a
 # console-hosted `powershell.exe -WindowStyle Hidden` still flashes a window
 # for an instant on every trigger (the watchdog runs every 5 minutes and this
@@ -85,10 +85,12 @@ $shellHost = 'PowerShell.exe'
 $ps7 = Get-Command pwsh.exe -ErrorAction SilentlyContinue
 if ($ps7) { $shellHost = $ps7.Source }
 $shell = New-Object -ComObject WScript.Shell
-foreach ($command in 'status','start','stop','restart','logs','diagnose','refresh','stats','report') {
+foreach ($command in 'status','start','stop','restart','logs','diagnose','refresh','stats','report','watchdog') {
   $shortcut = $shell.CreateShortcut((Join-Path $shortcutDir "VPN $command.lnk"))
   $shortcut.TargetPath = $shellHost
-  $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$bin\GolemVpn.ps1`" $command -Wait"
+  # -NoExit makes command output inspectable even after a UAC relaunch or an
+  # exception. GolemVpn.ps1 also offers its own Enter prompt.
+  $shortcut.Arguments = "-NoExit -NoProfile -ExecutionPolicy Bypass -File `"$bin\GolemVpn.ps1`" $command -Wait"
   $shortcut.WorkingDirectory = $bin
   $shortcut.IconLocation = "$env:SystemRoot\System32\shell32.dll,18"
   $shortcut.Save()

@@ -10,10 +10,19 @@ $endpoints = Join-Path $configDir 'endpoints.txt'
 $runner = Join-Path $root 'bin\Run-GolemVless.ps1'
 $lockState = Join-Path $state 'subscription.sha256'
 $logPath = Join-Path $state 'subscription-refresh.log'
+$preflight = Join-Path $root 'bin\Test-GolemTunnelPreflight.ps1'
 
 function Write-RefreshLog([string]$msg) {
   "$(Get-Date -Format o) $msg" | Out-File -Append -Encoding utf8 $logPath
   Write-Host "  [..] $msg"
+}
+
+if (Test-Path -LiteralPath $preflight) {
+  & $preflight -Quiet
+  if ($LASTEXITCODE -ne 0) {
+    Write-RefreshLog 'обнаружен внешний VPN/TUN — авто-refresh не трогает Golem и завершён безопасно'
+    exit 0
+  }
 }
 
 if (-not (Test-Path -LiteralPath $endpoints)) {
@@ -79,8 +88,8 @@ Set-Content -Encoding ascii -Path $lockState -Value $hash
 Disable-ScheduledTask 'GolemVLESS-Watchdog' -ErrorAction SilentlyContinue
 Stop-ScheduledTask    'GolemVLESS'           -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
-Get-Process sing-box -ErrorAction SilentlyContinue | Stop-Process -Force
-Get-Process xray     -ErrorAction SilentlyContinue | Stop-Process -Force
+# Never kill sing-box/xray by executable name: an external VPN can use the
+# same engines. The scheduled Golem task owns its runner and is enough here.
 
 Start-Sleep -Seconds 3
 # Relaunch the runner fully hidden (wscript + Run-Hidden.vbs, no console window).

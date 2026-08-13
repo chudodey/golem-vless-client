@@ -14,7 +14,7 @@
 #  Первый запуск запросит UAC — без администратора нельзя перезапустить sing-box.
 # ─────────────────────────────────────────────────────────────────────────────
 [CmdletBinding()]
-param([string]$Country)
+param([string]$Country, [ValidateRange(5, 240)] [int]$DurationMinutes = 30)
 
 $ErrorActionPreference = 'Stop'
 
@@ -26,6 +26,32 @@ $policy    = Join-Path $cfg 'policy.conf'
 $endpoints = Join-Path $cfg 'endpoints.txt'
 $render    = Join-Path $bin 'render_config.py'
 $control   = Join-Path $bin 'GolemVpn.ps1'
+$countryLock = Join-Path $state 'country-lock.json'
+$eventsPath  = Join-Path $state 'watchdog-events.jsonl'
+
+function Write-CountryEvent([hashtable]$data) {
+    try {
+        $data.timestamp = (Get-Date).ToString('o')
+        ($data | ConvertTo-Json -Compress) | Out-File -Append -Encoding utf8 $eventsPath
+    } catch {}
+}
+
+function Set-CountryLock([string]$countries, [string]$previous) {
+    $now = [datetimeoffset]::Now
+    @{
+        countries = $countries
+        previous_countries = $previous
+        started_at = $now.ToString('o')
+        expires_at = $now.AddMinutes($DurationMinutes).ToString('o')
+        duration_minutes = $DurationMinutes
+    } | ConvertTo-Json | Set-Content -LiteralPath $countryLock -Encoding utf8
+    Write-CountryEvent @{ action = 'country_filter_enabled'; countries = $countries; previous = $previous; expires_at = $now.AddMinutes($DurationMinutes).ToString('o'); message = "temporary country filter enabled for $DurationMinutes minute(s)" }
+}
+
+function Clear-CountryLock([string]$reason) {
+    if (Test-Path -LiteralPath $countryLock) { Remove-Item -LiteralPath $countryLock -Force }
+    Write-CountryEvent @{ action = 'country_filter_disabled'; healthy = $true; message = $reason }
+}
 
 # ── под какого PowerShell запускаться в elevated: тот же, что и сейчас ──────
 # PS7 = pwsh.exe в $PSHOME, PS5.1 = powershell.exe (у PS7 его там нет).
@@ -41,6 +67,7 @@ function Get-ShellHost {
 if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     $args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
     if ($Country) { $args += $Country }
+    $args += @('-DurationMinutes', $DurationMinutes)
     Start-Process -FilePath (Get-ShellHost) -Verb RunAs `
         -WorkingDirectory $env:SystemRoot -ArgumentList $args | Out-Null
     exit 0
@@ -169,13 +196,15 @@ function Show-Preview([string]$countries) {
 }
 
 # ── применить режим и перезапустить клиент (мы уже elevated) ────────────────
-function Invoke-Switch([string]$countries) {
+function Invoke-Switch([string]$countries, [switch]$Temporary) {
     $before = Get-CurrentCountry
     if ($before -ne $countries) {
         try { Set-CountryLine -Path $policy -Val $countries }
         catch { Write-Err "Не удалось записать policy.conf: $_"; return $false }
         Write-Ok ('policy.conf: countries = {0}' -f $(if ($countries) { $countries } else { '(пусто — рейтинг)' }))
     }
+    if ($Temporary -and $countries) { Set-CountryLock $countries $before }
+    elseif (-not $countries) { Clear-CountryLock 'country filter disabled manually; restored rating auto-selection' }
     Write-Host ''
     Write-Host '  Перезапускаю клиент (подбор живых нод может занять до минуты)…' -ForegroundColor Cyan
     if (-not (Test-Path -LiteralPath $control)) {
@@ -275,7 +304,7 @@ if ($c -notmatch '^[YyДд]') {
 }
 
 Write-Host ''
-if (-not (Invoke-Switch $target)) {
+if (-not (Invoke-Switch $target -Temporary)) {
     Read-Host '  [Enter] закрыть окно'
     exit 1
 }
@@ -304,8 +333,8 @@ if ($r2 -notmatch '^[QqКк]') {
         Write-Ok 'Готово. Фильтр снят, клиент перезапущен.'
     }
 } else {
-    Write-Warn "Фильтр '$target' остаётся активным."
-    Write-Host '  Снять позже: запустите ярлык «VPN страна выхода (оплата)» → [Enter].'
+    Write-Warn "Фильтр '$target' остаётся активным до автоматического возврата."
+    Write-Host "  Watchdog вернёт рейтинг-режим через $DurationMinutes мин.; снять раньше: ярлык → [Enter]."
 }
 Write-Host ''
 Read-Host '  [Enter] закрыть окно'

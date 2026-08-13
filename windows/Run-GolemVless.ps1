@@ -1,5 +1,10 @@
 ﻿$ErrorActionPreference = 'Stop'
 $root = Join-Path $env:LOCALAPPDATA 'GolemVLESS'
+$preflight = Join-Path $root 'bin\Test-GolemTunnelPreflight.ps1'
+if (Test-Path -LiteralPath $preflight) {
+  & $preflight -Quiet
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $stdoutLog = Join-Path $root "state\sing-box-$stamp.out.log"
 $stderrLog = Join-Path $root "state\sing-box-$stamp.err.log"
@@ -54,7 +59,11 @@ try {
   # "xray-pool" socks outbound (127.0.0.1:2081) depends on this being up
   # first: start it, wait for the port, then hand off to sing-box.
   $xrayConfig = "$root\state\xray-config.json"
-  Get-Process xray -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+  # Do not terminate a same-named xray process: it may belong to Durev/Happ.
+  # A listener already occupying :2081 is treated as a safe startup failure.
+  if (Test-NetConnection -ComputerName 127.0.0.1 -Port 2081 -InformationLevel Quiet -WarningAction SilentlyContinue) {
+    throw 'порт :2081 уже занят другим процессом; Golem не будет завершать чужой xray'
+  }
   if (Test-Path -LiteralPath $xrayConfig) {
     $xrayOutLog = Join-Path $root "state\xray-$stamp.out.log"
     $xrayErrLog = Join-Path $root "state\xray-$stamp.err.log"
