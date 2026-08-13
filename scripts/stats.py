@@ -212,7 +212,9 @@ def record_render(
     active: int,
     provider: str | None,
     probe: dict[int, int | None] | None = None,
-    http_results: dict[int, tuple[int | None, int | None] | None] | None = None,
+    http_results: dict[
+        int, tuple[int | None, int | None, int | None] | None
+    ] | None = None,
 ) -> None:
     """Record one config render: seen set, per-node probes, render summary."""
     ts = time.time()
@@ -239,7 +241,7 @@ def record_render(
         if http_results:
             verdict = http_results.get(i)
             if verdict is not None:
-                anth, yt = verdict
+                anth, yt, openrouter = verdict
                 _append(
                     state_dir,
                     {
@@ -250,7 +252,12 @@ def record_render(
                         "name": meta.get("name"),
                         "anthropic": anth,
                         "youtube": yt,
-                        "passed": bool(anth is not None and yt is not None),
+                        "openrouter": openrouter,
+                        "passed": bool(
+                            anth is not None
+                            and yt is not None
+                            and openrouter is not None
+                        ),
                     },
                 )
     chosen = nodes[active - 1] if 0 < active <= len(nodes) else None
@@ -322,7 +329,9 @@ def collect(
     alive = sum(1 for v in probe.values() if v is not None)
     print(f"TCP-probe: {alive}/{len(nodes)} alive", file=sys.stderr)
 
-    http_results: dict[int, tuple[int | None, int | None] | None] | None = None
+    http_results: dict[
+        int, tuple[int | None, int | None, int | None] | None
+    ] | None = None
     if not light and http_probe:
         sing_box = render_config.find_sing_box()
         if sing_box is not None:

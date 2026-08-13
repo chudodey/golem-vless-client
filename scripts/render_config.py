@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -291,12 +292,19 @@ def _decode_base64_blob(blob: str) -> list[str]:
 
 
 def _fetch_subscription(url: str, timeout: float = 30.0) -> list[str]:
+    # Never route the fetch through a proxy. With the system proxy enabled
+    # from a previous session, urllib on Windows picks 127.0.0.1:2080 from
+    # the registry — exactly when the client is restarting, the local proxy
+    # is down, so the fetch dies with "connection refused" (WinError 10061)
+    # and falls back to cache. The subscription must be fetched directly; if
+    # DPI blocks direct access, the base64 body is pasted instead (README).
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     req = urllib.request.Request(
         url,
         headers={"User-Agent": "golem-vless-client/1.0"},
         method="GET",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with opener.open(req, timeout=timeout) as resp:
         body = resp.read()
     text = body.decode("utf-8", errors="replace").strip()
     # Common: base64 blob of newline-separated URIs
@@ -351,11 +359,13 @@ def probe_nodes(
 
 PROBE_ANTHROPIC_URL = "https://api.anthropic.com/v1/models"
 PROBE_YOUTUBE_URL = "https://www.youtube.com/"
+PROBE_OPENROUTER_URL = "https://openrouter.ai/api/v1/models"
 # Reaching Anthropic's API unauthenticated answers 401 (missing key). Some
 # endpoints now 404 on a bare GET; either means the exit is NOT blocked
 # upstream (a blocked datacenter exit answers 403 and must be filtered out).
 PROBE_DEFAULT_ANTHROPIC_OK = "401 404"
 PROBE_DEFAULT_YOUTUBE_OK = "200"
+PROBE_DEFAULT_OPENROUTER_OK = "200"
 PROBE_CACHE_TTL_HOURS = 6.0
 PROBE_TIMEOUT = 5.0
 
@@ -445,7 +455,11 @@ def _probe_config(node: dict[str, Any], listen_port: int) -> dict[str, Any]:
             # that actually works (or vice versa).
             "rules": [
                 {
-                    "domain": ["api.anthropic.com", "www.youtube.com"],
+                    "domain": [
+                        "api.anthropic.com",
+                        "www.youtube.com",
+                        "openrouter.ai",
+                    ],
                     "server": "dns-remote",
                 }
             ],
@@ -469,9 +483,9 @@ def _free_port() -> int:
 
 def _run_throwaway_probe(
     binary: str, run_args: list[str], cfg: dict[str, Any], port: int, timeout: float
-) -> tuple[int | None, int | None]:
+) -> tuple[int | None, int | None, int | None]:
     """Write `cfg` to a temp file, run `binary run_args... -c cfg`, probe
-    Anthropic + YouTube through the port it opens, then tear it down.
+    Anthropic + YouTube + OpenRouter through the port it opens, then tear it down.
 
     Engine-agnostic: sing-box and xray-core both take "run -c <file>" and
     both open their inbound almost immediately, so the same wait/probe/kill
@@ -496,17 +510,18 @@ def _run_throwaway_probe(
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if proc.poll() is not None:
-                return None, None  # process exited: bad node/config
+                return None, None, None  # process exited: bad node/config
             try:
                 with socket.create_connection(("127.0.0.1", port), timeout=0.3):
                     break
             except OSError:
                 time.sleep(0.1)
         else:
-            return None, None
+            return None, None, None
         anth = _http_status_via_proxy(port, PROBE_ANTHROPIC_URL, timeout)
         yt = _http_status_via_proxy(port, PROBE_YOUTUBE_URL, timeout)
-        return anth, yt
+        openrouter = _http_status_via_proxy(port, PROBE_OPENROUTER_URL, timeout)
+        return anth, yt, openrouter
     finally:
         if proc is not None:
             proc.terminate()
@@ -526,8 +541,8 @@ def _probe_single_node(
     sing_box: str,
     timeout: float,
     xray: str | None = None,
-) -> tuple[int | None, int | None]:
-    """Probe one node's actual reachability (Anthropic + YouTube).
+) -> tuple[int | None, int | None, int | None]:
+    """Probe one node's actual reachability (Anthropic + YouTube + OpenRouter).
 
     Dispatches by node["meta"]["engine"]: sing-box-native nodes get a
     throwaway sing-box instance; xhttp/splithttp nodes (engine="xray") need
@@ -539,7 +554,7 @@ def _probe_single_node(
     port = _free_port()
     if engine == "xray":
         if xray is None:
-            return None, None
+            return None, None, None
         return _run_throwaway_probe(xray, ["run"], build_xray_config([node], port), port, timeout)
     return _run_throwaway_probe(sing_box, ["run"], _probe_config(node, port), port, timeout)
 
@@ -570,14 +585,15 @@ def probe_nodes_http(
     timeout: float = PROBE_TIMEOUT,
     anthropic_ok: str = PROBE_DEFAULT_ANTHROPIC_OK,
     youtube_ok: str = PROBE_DEFAULT_YOUTUBE_OK,
+    openrouter_ok: str = PROBE_DEFAULT_OPENROUTER_OK,
     cache_path: Path | None = None,
     cache_ttl_hours: float = PROBE_CACHE_TTL_HOURS,
-) -> tuple[set[int], dict[int, tuple[int | None, int | None]]]:
+) -> tuple[set[int], dict[int, tuple[int | None, int | None, int | None]]]:
     """HTTP-probe every node through a throwaway sing-box/xray instance.
 
     Expected outcomes (see B-008/B-010): api.anthropic.com must answer
-    401 (no API key sent; 403 = blocked upstream exit) and www.youtube.com
-    must answer 200. Returns (passing_indices, per_index (anthropic, youtube)).
+    401/404, while www.youtube.com and openrouter.ai/api/v1/models must answer
+    200. Returns (passing_indices, per_index (anthropic, youtube, openrouter)).
 
     Each node is probed through whichever engine can actually dial it
     (node["meta"]["engine"] — sing-box for native transports, xray-core for
@@ -596,6 +612,11 @@ def probe_nodes_http(
     accepted_yt = {
         int(c) for c in youtube_ok.replace(",", " ").split() if c.strip().isdigit()
     }
+    accepted_openrouter = {
+        int(c)
+        for c in openrouter_ok.replace(",", " ").split()
+        if c.strip().isdigit()
+    }
 
     cache: dict[str, dict[str, Any]] = {}
     if cache_path is not None and cache_path.is_file():
@@ -604,7 +625,7 @@ def probe_nodes_http(
         except (OSError, ValueError):
             cache = {}
 
-    results: dict[int, tuple[int | None, int | None]] = {}
+    results: dict[int, tuple[int | None, int | None, int | None]] = {}
     passing: set[int] = set()
     to_probe: list[tuple[int, dict[str, Any], str]] = []
 
@@ -612,23 +633,33 @@ def probe_nodes_http(
     for i, node in enumerate(nodes):
         fp = _node_fingerprint(node)
         hit = cache.get(fp)
-        if hit and hit.get("passed") and now - hit.get("at", 0) < cache_ttl_hours * 3600:
+        if (
+            hit
+            and hit.get("passed")
+            and hit.get("openrouter") in accepted_openrouter
+            and now - hit.get("at", 0) < cache_ttl_hours * 3600
+        ):
             passing.add(i)
-            results[i] = (hit.get("anthropic"), hit.get("youtube"))
+            results[i] = (
+                hit.get("anthropic"),
+                hit.get("youtube"),
+                hit.get("openrouter"),
+            )
         else:
             to_probe.append((i, node, fp))
 
     if to_probe:
         print(
             f"Проверяю ноды по HTTP (api.anthropic.com → 401, "
-            f"www.youtube.com → 200)... {len(to_probe)} к проверке",
+            f"www.youtube.com → 200, openrouter.ai → 200)... "
+            f"{len(to_probe)} к проверке",
             file=sys.stderr,
         )
         with ThreadPoolExecutor(max_workers=min(8, len(to_probe))) as ex:
 
             def _worker(
                 i: int, node: dict[str, Any]
-            ) -> tuple[int, int | None, int | None]:
+            ) -> tuple[int, int | None, int | None, int | None]:
                 return (i, *_probe_single_node(node, sing_box, timeout, xray=xray))
 
             futures = [
@@ -636,20 +667,26 @@ def probe_nodes_http(
             ]
             fp_by_index = {i: fp for i, _node, fp in to_probe}
             for f in futures:
-                i, anth, yt = f.result()
-                results[i] = (anth, yt)
+                i, anth, yt, openrouter = f.result()
+                results[i] = (anth, yt, openrouter)
                 fp = fp_by_index[i]
-                ok = anth in accepted_anth and yt in accepted_yt
+                ok = (
+                    anth in accepted_anth
+                    and yt in accepted_yt
+                    and openrouter in accepted_openrouter
+                )
                 cache[fp] = {
                     "passed": bool(ok),
                     "anthropic": anth,
                     "youtube": yt,
+                    "openrouter": openrouter,
                     "at": time.time(),
                 }
                 name = nodes[i]["meta"]["name"]
                 print(
                     f"  #{i + 1} {name}: anthropic={anth} "
-                    f"youtube={yt} → {'OK' if ok else 'FAIL'}",
+                    f"youtube={yt} openrouter={openrouter} → "
+                    f"{'OK' if ok else 'FAIL'}",
                     file=sys.stderr,
                 )
                 if ok:
@@ -1489,7 +1526,9 @@ def _record_render_stats(
     nodes: list[dict[str, Any]],
     active: int,
     probe: dict[int, int | None] | None,
-    http_verdict: dict[int, tuple[int | None, int | None]] | None,
+    http_verdict: dict[
+        int, tuple[int | None, int | None, int | None]
+    ] | None,
     passing: set[int],
     *,
     state_dir: Path,
@@ -1629,6 +1668,11 @@ def main() -> int:
         help="Space/comma-separated acceptable statuses for www.youtube.com (default: 200)",
     )
     ap.add_argument(
+        "--http-probe-openrouter",
+        default=PROBE_DEFAULT_OPENROUTER_OK,
+        help="Acceptable statuses for openrouter.ai/api/v1/models (default: 200)",
+    )
+    ap.add_argument(
         "--http-probe-cache-ttl",
         type=float,
         default=PROBE_CACHE_TTL_HOURS,
@@ -1655,6 +1699,7 @@ def main() -> int:
     nodes, active = load_endpoints(
         args.endpoints, fetch_subs=args.fetch, sub_cache=sub_cache
     )
+    source_node_count = len(nodes)
     if args.no_xray:
         dropped = [n for n in nodes if n["meta"].get("engine") == "xray"]
         if dropped:
@@ -1728,6 +1773,7 @@ def main() -> int:
             f"осталось {len(nodes)} нод",
             file=sys.stderr,
         )
+    country_filtered_count = len(nodes)
 
     probe: dict[int, int | None] | None = None
     if not args.check_only and not args.no_probe:
@@ -1770,7 +1816,9 @@ def main() -> int:
     # through a throwaway sing-box instance per node and keep only nodes that
     # answer as expected. This is the "auto-refilter at each build" step.
     passing: set[int] = set()
-    http_verdict: dict[int, tuple[int | None, int | None]] | None = None
+    http_verdict: dict[
+        int, tuple[int | None, int | None, int | None]
+    ] | None = None
     if not args.check_only and not args.no_http_probe:
         sing_box = find_sing_box()
         xray_bin = None if args.no_xray else find_xray()
@@ -1796,6 +1844,7 @@ def main() -> int:
                 timeout=args.http_probe_timeout,
                 anthropic_ok=args.http_probe_anthropic,
                 youtube_ok=args.http_probe_youtube,
+                openrouter_ok=args.http_probe_openrouter,
                 cache_path=cache_path,
                 cache_ttl_hours=args.http_probe_cache_ttl,
             )
@@ -1899,6 +1948,51 @@ def main() -> int:
         for i, n in enumerate(nodes, 1):
             row = {"index": i, "active": i == active, **n["meta"]}
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    # Small, secret-free explanation for status UIs.  `active` above is only
+    # the initial/fixed candidate; a urltest outbound may subsequently choose
+    # another member without re-rendering.  Do not call it the live node.
+    proxy_cfg = next((o for o in cfg.get("outbounds", []) if o.get("tag") == "proxy"), {})
+    mode = "urltest" if proxy_cfg.get("type") == "urltest" else "fixed"
+    if countries_raw:
+        reason = (
+            f"country filter {countries_raw}; {source_node_count} subscription node(s) "
+            f"→ {country_filtered_count} allowed → {len(nodes)} passed final checks"
+        )
+    elif mode == "urltest":
+        reason = (
+            f"auto-selection; {len(nodes)} node(s) passed final checks, "
+            f"urltest periodically races {len(proxy_cfg.get('outbounds', []))} candidate(s)"
+        )
+    else:
+        reason = f"fixed/only eligible candidate; {len(nodes)} node(s) passed final checks"
+    selection_path = args.out.parent / "selection.json"
+    selection_path.write_text(
+        json.dumps(
+            {
+                "rendered_at": datetime.now(timezone.utc).astimezone().isoformat(),
+                "mode": mode,
+                "auto_select": _auto_on,
+                "country_filter": countries_raw,
+                "source_node_count": source_node_count,
+                "country_filtered_count": country_filtered_count,
+                "eligible_node_count": len(nodes),
+                "candidate_count": len(proxy_cfg.get("outbounds", [])) if mode == "urltest" else 1,
+                "initial_candidate": {
+                    "index": active,
+                    "name": meta["name"],
+                    "provider": meta.get("provider"),
+                    "server": meta["server"],
+                    "server_port": meta["server_port"],
+                },
+                "reason": reason,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    print(f"Wrote {selection_path}", file=sys.stderr)
 
     # Per-node latency report for UI previews (B-019), index = outbounds.jsonl
     # index (1-based), lat_ms = null when the TCP probe timed out ("dead").
